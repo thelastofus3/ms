@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#53647c"/></marker></defs>
+<rect width="100%" height="100%" fill="#f7f9fc"/>
+<text x="55" y="65" font-family="Segoe UI,Arial,sans-serif" font-size="32" font-weight="600" text-anchor="start" fill="#223047">02 · Размещение первого запуска</text>
+<text x="55" y="108" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="normal" text-anchor="start" fill="#223047">Один компьютер: Windows для камеры и клиента; отдельные окружения для серверных и GPU-компонентов.</text>
+<rect x="40" y="150" width="1520" height="710" rx="16" fill="none" stroke="#c5cfdd" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="58" y="180" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="600" text-anchor="start" fill="#223047">Тестовый компьютер · RTX 2060 6 ГБ · RAM ≈ 32 ГБ</text>
+<rect x="65" y="215" width="480" height="610" rx="16" fill="none" stroke="#c5cfdd" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="83" y="245" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="600" text-anchor="start" fill="#223047">Windows: клиент и устройства</text>
+<rect x="585" y="215" width="950" height="610" rx="16" fill="none" stroke="#c5cfdd" stroke-width="2" stroke-dasharray="8 5"/>
+<text x="603" y="245" font-family="Segoe UI,Arial,sans-serif" font-size="20" font-weight="600" text-anchor="start" fill="#223047">Изолированные серверные окружения / Linux · WSL2</text>
+<polyline points="430,351.0 650,351.0" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<polyline points="930,351.0 1170,351.0" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="290.0,592 290.0,670" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="430,726.0 575,726 575,440 790,440 790.0,407" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="930,541.0 1060,541 1060,731 1170,731.0" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1310.0,597 1310.0,675" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="150,351.0 110,351 110,640 620,640 620,731 650,731.0" fill="none" stroke="#53647c" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="150" y="295" width="280" height="112" rx="12" fill="#e7f0ff" stroke="#3469ba" stroke-width="2"/>
+<text x="290.0" y="329" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Web / телевизор</text>
+<text x="290.0" y="361" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Браузер · интерактивная</text>
+<text x="290.0" y="385" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">сцена</text>
+<rect x="150" y="480" width="280" height="112" rx="12" fill="#eeeaf8" stroke="#8062b3" stroke-width="2"/>
+<text x="290.0" y="514" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">RGB-камера</text>
+<text x="290.0" y="546" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Захват локального устройства</text>
+<rect x="150" y="670" width="280" height="112" rx="12" fill="#e6f4ee" stroke="#268360" stroke-width="2"/>
+<text x="290.0" y="704" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Tracking Agent</text>
+<text x="290.0" y="736" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Поза и локальная калибровка</text>
+<rect x="650" y="295" width="280" height="112" rx="12" fill="#e6f4ee" stroke="#268360" stroke-width="2"/>
+<text x="790.0" y="329" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Java Platform</text>
+<text x="790.0" y="361" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">REST · WebSocket</text>
+<rect x="1170" y="295" width="280" height="112" rx="12" fill="#fff1d8" stroke="#b98026" stroke-width="2"/>
+<text x="1310.0" y="329" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">PostgreSQL</text>
+<text x="1310.0" y="361" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Отдельные схемы владельцев</text>
+<rect x="650" y="485" width="280" height="112" rx="12" fill="#e6f4ee" stroke="#268360" stroke-width="2"/>
+<text x="790.0" y="519" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Space worker</text>
+<text x="790.0" y="551" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">GPU · пакетная реконструкция</text>
+<rect x="1170" y="485" width="280" height="112" rx="12" fill="#e6f4ee" stroke="#268360" stroke-width="2"/>
+<text x="1310.0" y="519" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Avatar worker</text>
+<text x="1310.0" y="551" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Blender · сборка GLB</text>
+<rect x="650" y="675" width="280" height="112" rx="12" fill="#e6f4ee" stroke="#268360" stroke-width="2"/>
+<text x="790.0" y="709" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">LiveKit</text>
+<text x="790.0" y="741" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">SFU · медиапотоки</text>
+<rect x="1170" y="675" width="280" height="112" rx="12" fill="#fff1d8" stroke="#b98026" stroke-width="2"/>
+<text x="1310.0" y="709" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Хранилище файлов</text>
+<text x="1310.0" y="741" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Диск через HTTP-адаптеры</text>
+<rect x="650" y="900" width="800" height="85" rx="12" fill="#eeeaf8" stroke="#8062b3" stroke-width="2"/>
+<text x="1050.0" y="934" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="600" text-anchor="middle" fill="#223047">Будущий GPU-сервер</text>
+<text x="1050.0" y="966" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Те же сервисы и контракты; новое размещение</text>
+<rect x="489.25" y="314" width="101.5" height="26" rx="5" fill="#f7f9fc"/>
+<text x="540" y="333" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">HTTP / WS</text>
+<rect x="994.5" y="314" width="111.0" height="26" rx="5" fill="#f7f9fc"/>
+<text x="1050" y="333" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Метаданные</text>
+<rect x="548.0" y="556" width="54.0" height="26" rx="5" fill="#f7f9fc"/>
+<text x="575" y="575" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Позы</text>
+<rect x="1009.25" y="601" width="101.5" height="26" rx="5" fill="#f7f9fc"/>
+<text x="1060" y="620" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">Результат</text>
+<rect x="313.5" y="621" width="73.0" height="26" rx="5" fill="#f7f9fc"/>
+<text x="350" y="640" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="normal" text-anchor="middle" fill="#223047">WebRTC</text>
+<text x="55" y="1040" font-family="Segoe UI,Arial,sans-serif" font-size="18" font-weight="normal" text-anchor="start" fill="#223047">Генерация выполняется до встречи. Перенос worker на другой сервер сохраняет HTTP-контракты и форматы пакетов.</text>
+</svg>
