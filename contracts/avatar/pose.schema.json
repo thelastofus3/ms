@@ -1,0 +1,110 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "sequence": {
+      "minimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "timestamp_ms": {
+      "minimum": 0,
+      "title": "Timestamp Ms",
+      "type": "number"
+    },
+    "position": {
+      "default": [
+        0,
+        0,
+        0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Position",
+      "type": "array"
+    },
+    "rotation": {
+      "default": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "maxItems": 4,
+      "minItems": 4,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Rotation",
+      "type": "array"
+    },
+    "joints": {
+      "additionalProperties": {
+        "maxItems": 4,
+        "minItems": 4,
+        "prefixItems": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "type": "array"
+      },
+      "title": "Joints",
+      "type": "object"
+    },
+    "confidence": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "tracking_state": {
+      "default": "TRACKED",
+      "enum": [
+        "TRACKED",
+        "UNCERTAIN",
+        "LOST"
+      ],
+      "title": "Tracking State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "sequence",
+    "timestamp_ms"
+  ],
+  "title": "PoseFrame",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

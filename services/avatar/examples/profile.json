@@ -1,0 +1,13 @@
+{
+  "name": "Демонстрационный аватар",
+  "height_m": 1.8,
+  "gender": 0.7,
+  "age": 0.4,
+  "muscle": 0.5,
+  "weight": 0.45,
+  "skin_color": "#b98970",
+  "clothing_color": "#375a91",
+  "hair_color": "#382923",
+  "clothing": "casual",
+  "hair": "short"
+}

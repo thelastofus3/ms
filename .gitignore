@@ -1,0 +1,16 @@
+.tools/
+.venv/
+.runtime/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+node_modules/
+dist/
+.env
+test-results/
+playwright-report/
+.superpowers/
+.env.*
+!.env.example
+apps/web/public/demo/
+apps/web/public/gaussian-demo/

@@ -1,0 +1,168 @@
+{
+  "$defs": {
+    "BoneBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "minimum": 0,
+          "title": "Node",
+          "type": "integer"
+        },
+        "rest": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rest",
+          "type": "array"
+        },
+        "basis": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Basis",
+          "type": "array"
+        }
+      },
+      "required": [
+        "node",
+        "rest",
+        "basis"
+      ],
+      "title": "BoneBinding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "avatar_id": {
+      "format": "uuid",
+      "title": "Avatar Id",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "representation": {
+      "const": "skinned-glb",
+      "default": "skinned-glb",
+      "title": "Representation",
+      "type": "string"
+    },
+    "model_file": {
+      "const": "avatar.glb",
+      "default": "avatar.glb",
+      "title": "Model File",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "height_m": {
+      "maximum": 2.3,
+      "minimum": 1.2,
+      "title": "Height M",
+      "type": "number"
+    },
+    "coordinates": {
+      "const": "RH_Y_UP_METRES_FORWARD_Z",
+      "default": "RH_Y_UP_METRES_FORWARD_Z",
+      "title": "Coordinates",
+      "type": "string"
+    },
+    "rig": {
+      "additionalProperties": {
+        "$ref": "#/$defs/BoneBinding"
+      },
+      "maxProperties": 19,
+      "minProperties": 19,
+      "propertyNames": {
+        "enum": [
+          "hips",
+          "spine",
+          "chest",
+          "neck",
+          "head",
+          "leftShoulder",
+          "leftUpperArm",
+          "leftLowerArm",
+          "leftHand",
+          "rightShoulder",
+          "rightUpperArm",
+          "rightLowerArm",
+          "rightHand",
+          "leftUpperLeg",
+          "leftLowerLeg",
+          "leftFoot",
+          "rightUpperLeg",
+          "rightLowerLeg",
+          "rightFoot"
+        ]
+      },
+      "title": "Rig",
+      "type": "object"
+    },
+    "generator": {
+      "default": "mpfb",
+      "title": "Generator",
+      "type": "string"
+    },
+    "generator_revision": {
+      "default": "",
+      "title": "Generator Revision",
+      "type": "string"
+    },
+    "clips": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Clips",
+      "type": "array"
+    }
+  },
+  "required": [
+    "avatar_id",
+    "sha256",
+    "height_m",
+    "rig"
+  ],
+  "title": "Manifest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

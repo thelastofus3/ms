@@ -1,0 +1,114 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "height_m": {
+      "default": 1.75,
+      "maximum": 2.3,
+      "minimum": 1.2,
+      "title": "Height M",
+      "type": "number"
+    },
+    "gender": {
+      "default": 0.5,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Gender",
+      "type": "number"
+    },
+    "age": {
+      "default": 0.4,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Age",
+      "type": "number"
+    },
+    "muscle": {
+      "default": 0.5,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Muscle",
+      "type": "number"
+    },
+    "weight": {
+      "default": 0.5,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Weight",
+      "type": "number"
+    },
+    "nose_width": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": -1,
+      "title": "Nose Width",
+      "type": "number"
+    },
+    "chin_width": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": -1,
+      "title": "Chin Width",
+      "type": "number"
+    },
+    "eye_size": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": -1,
+      "title": "Eye Size",
+      "type": "number"
+    },
+    "skin_color": {
+      "default": "#b98970",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "title": "Skin Color",
+      "type": "string"
+    },
+    "clothing_color": {
+      "default": "#375a91",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "title": "Clothing Color",
+      "type": "string"
+    },
+    "hair_color": {
+      "default": "#382923",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "title": "Hair Color",
+      "type": "string"
+    },
+    "clothing": {
+      "const": "casual",
+      "default": "casual",
+      "title": "Clothing",
+      "type": "string"
+    },
+    "hair": {
+      "default": "short",
+      "enum": [
+        "short",
+        "none"
+      ],
+      "title": "Hair",
+      "type": "string"
+    },
+    "references": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "References",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "AvatarProfile",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

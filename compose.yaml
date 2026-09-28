@@ -1,0 +1,95 @@
+services:
+  avatar-lhmpp:
+    profiles: [lhmpp]
+    build:
+      context: ./services/avatar/gaussian
+      dockerfile: Dockerfile.lhmpp
+    image: avatar-lhmpp:cu121
+    gpus: all
+    shm_size: 2gb
+    volumes:
+      - ${LHMPP_RUNTIME_DIR:-D:/CodexData/MasterProject/lhmpp}:/runtime
+      - avatar-lhmpp-env:/runtime/env
+      - ./.tools/lhmpp-runtime:/opt/lhmpp
+      - ${LHMPP_RUNTIME_DIR:-D:/CodexData/MasterProject/lhmpp}/priors:/opt/lhmpp/pretrained_models:ro
+      - ${LHM_RUNTIME_DIR:-D:/CodexData/MasterProject/lhm}/wheels:/old-cache/wheels:ro
+      - ./dataset:/input:ro
+      - ./services/avatar/src:/service:ro
+      - ./services/avatar/gaussian:/experiment:ro
+    command: ["python", "-c", "import torch; print(torch.cuda.get_device_name(0))"]
+  # Experimental photo reconstruction. Requires the downloaded LHM assets and
+  # existing CUDA base image; intentionally excluded from ordinary compose up.
+  avatar-lhm:
+    profiles: [lhm]
+    image: avatar-hugs:86ebe55
+    gpus: all
+    working_dir: /opt/lhm
+    environment:
+      PATH: /runtime/env/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PYTHONPATH: /opt/lhm
+      PYTHONDONTWRITEBYTECODE: "1"
+      HF_HOME: /runtime/cache/hf
+      TORCH_HOME: /runtime/cache/torch
+      TMPDIR: /tmp/lhm-build
+    volumes:
+      - type: bind
+        source: ${LHM_RUNTIME_DIR:-D:/CodexData/MasterProject/lhm}
+        target: /runtime
+        bind:
+          create_host_path: false
+      - avatar-lhm-env:/runtime/env
+      - type: bind
+        source: ./.tools/lhm-runtime
+        target: /opt/lhm
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${LHM_RUNTIME_DIR:-D:/CodexData/MasterProject/lhm}/pretrained_models
+        target: /opt/lhm/pretrained_models
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./services/avatar/gaussian:/experiment:ro
+      # MINI generates 1_20000.ply on first construction; official archive only
+      # supplies larger point caches. Keep the other model assets read-only.
+      - type: bind
+        source: ${LHM_RUNTIME_DIR:-D:/CodexData/MasterProject/lhm}/pretrained_models/dense_sample_points
+        target: /opt/lhm/pretrained_models/dense_sample_points
+        bind:
+          create_host_path: false
+    command: ["python", "/experiment/lhm_smoke.py", "--help"]
+  avatar-photos:
+    build:
+      context: ./services/avatar
+      dockerfile: Dockerfile.photos
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - avatar-photos:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  avatar-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: avatar
+      POSTGRES_PASSWORD: avatar-local
+      POSTGRES_DB: avatar
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - avatar-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avatar -d avatar"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  avatar-lhmpp-env:
+  avatar-lhm-env:
+  avatar-photos:
+  avatar-db:
