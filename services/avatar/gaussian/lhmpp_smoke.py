@@ -1,6 +1,6 @@
 """Measured local multiview experiment; no production jobs are marked successful.
 
-Uses the upstream GS export routines, FP16 neural stages and a separately tested
+Uses the upstream GS export routines, FP32 neural stages and a separately tested
 Turing attention adapter. Every run has a new directory and a durable report.
 """
 
@@ -34,7 +34,7 @@ def main():
             "xformers packed point attention on Turing",
             "efficient SDPA instead of Flash-only joint attention",
             "raw Gaussians without neural image refinement",
-            "FP32 native sparse convolutions",
+            "FP32 implicit GEMM sparse convolutions",
         ],
     }
     start = time.monotonic()
@@ -56,7 +56,7 @@ def main():
         from lhmpp_attention import packed_attention
         from lhmpp_compat import (
             enable_legacy_numpy_aliases,
-            enable_native_sparse_convolutions,
+            enable_float32_sparse_convolutions,
         )
         from PIL import Image
         from safetensors.torch import load_file
@@ -147,7 +147,7 @@ def main():
         if model.shape_head is not None:
             model.shape_head.cuda()
         model.renderer.cuda()
-        enable_native_sparse_convolutions(model)
+        enable_float32_sparse_convolutions(model)
 
         cfg = {"render_size": 512}
         motion = exporter._build_synthetic_motion_seq(cfg)
@@ -157,10 +157,6 @@ def main():
         def infer_and_save(*values, **kwargs):
             if not cached:
                 cached.append(actual_infer(*values, **kwargs))
-                for gaussian in cached[0][0]:
-                    for key in ("xyz", "shs", "opacity", "scaling", "rotation"):
-                        if not torch.isfinite(getattr(gaussian, key)).all():
-                            raise FloatingPointError(f"Nonfinite Gaussian {key}")
                 stage("save_reconstruction_state")
                 torch.save(
                     {
@@ -171,6 +167,12 @@ def main():
                     },
                     output / "reconstruction.pt",
                 )
+                for gaussian in cached[0][0]:
+                    for key in ("offset_xyz", "shs", "opacity", "scaling", "rotation"):
+                        if not torch.isfinite(getattr(gaussian, key)).all():
+                            raise FloatingPointError(f"Nonfinite Gaussian {key}")
+                if not torch.isfinite(cached[0][1]["neutral_coords"]).all():
+                    raise FloatingPointError("Nonfinite neutral coordinates")
             return cached[0]
 
         model.infer_single_view = infer_and_save

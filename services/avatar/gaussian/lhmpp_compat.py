@@ -2,24 +2,24 @@
 import numpy as np
 
 
-def enable_native_sparse_convolutions(model):
-    """Keep sparse convolution accumulation in FP32 on Turing GPUs."""
+def enable_float32_sparse_convolutions(model):
+    """Run Turing sparse convolutions with supported FP32 implicit GEMM."""
     import torch
     import spconv.pytorch as spconv
     from spconv.core import ConvAlgo
 
     def wrap(forward):
-        def native_forward(sparse):
+        def float32_forward(sparse):
             dtype = sparse.features.dtype
             with torch.autocast("cuda", enabled=False):
                 result = forward(sparse.replace_feature(sparse.features.float()))
             return result.replace_feature(result.features.to(dtype))
-        return native_forward
+        return float32_forward
 
     for module in model.modules():
         if isinstance(module, spconv.SubMConv3d):
             module.float()
-            module.algo = ConvAlgo.Native
+            module.algo = ConvAlgo.MaskImplicitGemm
             module.forward = wrap(module.forward)
 
 

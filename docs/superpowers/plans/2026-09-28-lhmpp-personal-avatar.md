@@ -105,3 +105,15 @@ inference failure must not replace the demo or expose a false successful job.
   actual GPU adapter comparison passed. FP16 native parity was insufficient at
   strict tolerance, so accumulation stays FP32. Third eight-view run started.
 - Fresh existing Python suite: 68 passed, 11 skipped (9.30 seconds).
+- 2026-09-29: First eight-view FP16/native-sparse run exported 160000-point PLYs
+  but every vertex position, color, scale, and rotation was nonfinite; marked
+  report invalid_numerics and did not present it as an avatar. Browser preview
+  confirmed empty canvas. FP32 retrial reached GaussianAppOutput then failed a
+  validation typo (`xyz` vs actual `offset_xyz`); report records exact error.
+  Corrected output field validation and persist model state before validating.
+- A full FP32 + native sparse retry was actively progressing through decoder,
+  but took over 25 minutes and was stopped for a faster compatible path. The
+  CUDA numerical probe showed FP32 MaskImplicitGemm finite at 157464 points,
+  64/128/256 channels (0.94/1.48/5.72 seconds respectively), and the adapter
+  assertion failed before, passed after switching the algorithm. Eight-view
+  reconstruction-07 now tests that faster path on the actual input.
