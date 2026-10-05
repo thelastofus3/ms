@@ -4,12 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prepare:tracking": "node scripts/prepare-tracking.mjs",
+    "predev": "npm run prepare:tracking",
+    "prebuild": "npm run prepare:tracking",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "test:browser": "playwright test"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "0.19.0",
+    "@mediapipe/tasks-vision": "1.0.1",
     "@sparkjsdev/spark": "2.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

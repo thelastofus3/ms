@@ -1,10 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { GaussianRenderer } from "./renderer";
 import type { Motion } from "./rig";
-import { Photos } from "./Photos";
 
 export function GaussianStudio() {
-  const [photosOpen, setPhotosOpen] = useState(false);
   const host = useRef<HTMLDivElement>(null),
     viewer = useRef<GaussianRenderer | undefined>(undefined);
   const [status, setStatus] = useState("Загрузка фотографического примера…");
@@ -51,24 +49,12 @@ export function GaussianStudio() {
   }, []);
   return (
     <main className="gaussian-studio">
-      <nav className="photo-navigation" aria-label="Аватар">
-        <button aria-pressed={!photosOpen} onClick={() => setPhotosOpen(false)}>
-          Просмотр аватара
-        </button>
-        <button aria-pressed={photosOpen} onClick={() => setPhotosOpen(true)}>
-          Мои фотографии
-        </button>
-      </nav>
       <header>
         <p className="eyebrow">GAUSSIAN AVATAR</p>
         <h1>Фотографический аватар</h1>
         <p>Внешность из реальной съёмки. Движение суставов прямо в браузере.</p>
       </header>
-      {photosOpen && <Photos />}
-      <div
-        className="gaussian-layout"
-        style={photosOpen ? { display: "none" } : undefined}
-      >
+      <div className="gaussian-layout">
         <div className="gaussian-view" ref={host} />
         <aside className="gaussian-panel">
           <h2>Просмотр и движение</h2>

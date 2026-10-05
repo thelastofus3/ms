@@ -1,4 +1,137 @@
 services:
+  web:
+    profiles: [rooms, room-gpu]
+    build: ./apps/web
+    ports: ["127.0.0.1:5173:80"]
+    volumes:
+      - ./apps/web/public/gaussian-demo:/usr/share/nginx/html/gaussian-demo:ro
+      - ./apps/web/public/demo:/usr/share/nginx/html/demo:ro
+    depends_on:
+      room-api: { condition: service_healthy }
+      room-localizer: { condition: service_started }
+      avatar-photos: { condition: service_started }
+    restart: unless-stopped
+  room-db:
+    profiles: [rooms, room-gpu]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: rooms
+      POSTGRES_PASSWORD: ${ROOM_DATABASE_PASSWORD:-rooms-local}
+      POSTGRES_DB: rooms
+    ports: ["127.0.0.1:55433:5432"]
+    volumes: ["room-db:/var/lib/postgresql/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rooms -d rooms"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  room-storage:
+    profiles: [rooms, room-gpu]
+    build:
+      context: ./services/space-storage
+      dockerfile: Dockerfile.minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      MINIO_ROOT_PASSWORD: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${ROOM_BROWSER_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: ["room-storage:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  room-storage-init:
+    profiles: [rooms, room-gpu]
+    build: ./services/space-storage
+    environment:
+      ROOM_S3_PROVIDER: minio
+      ROOM_S3_ENDPOINT: http://room-storage:9000
+      ROOM_S3_BUCKET: rooms
+      ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+      ROOM_BROWSER_ORIGINS: ${ROOM_BROWSER_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+    depends_on:
+      room-storage: { condition: service_healthy }
+  room-api:
+    profiles: [rooms, room-gpu]
+    build: ./services/space-api
+    ports: ["127.0.0.1:8003:8003"]
+    environment:
+      ROOM_DATABASE_URL: jdbc:postgresql://room-db:5432/rooms
+      ROOM_DATABASE_USER: rooms
+      ROOM_DATABASE_PASSWORD: ${ROOM_DATABASE_PASSWORD:-rooms-local}
+      ROOM_S3_ENDPOINT: http://room-storage:9000
+      ROOM_S3_PUBLIC_ENDPOINT: ${ROOM_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:9000}
+      ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+      ROOM_BROWSER_ORIGINS: ${ROOM_BROWSER_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
+    depends_on:
+      room-db: { condition: service_healthy }
+      room-storage-init: { condition: service_completed_successfully }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8003; printf 'GET /actuator/health HTTP/1.0\r\n\r\n' >&3; cat <&3 | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+  room-worker:
+    profiles: [room-gpu]
+    build: ./services/space-worker
+    gpus: all
+    shm_size: 2gb
+    environment:
+      ROOM_DATABASE_DSN: postgresql://rooms:${ROOM_DATABASE_PASSWORD:-rooms-local}@room-db:5432/rooms
+      ROOM_S3_ENDPOINT: http://room-storage:9000
+      ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+      ROOM_SCRATCH: /scratch
+      ROOM_MAX_SCRATCH_GIB: ${ROOM_MAX_SCRATCH_GIB:-30}
+      ROOM_MAX_SPLATS: ${ROOM_MAX_SPLATS:-2500000}
+    volumes: ["room-scratch:/scratch"]
+    depends_on:
+      room-api: { condition: service_healthy }
+      room-progress: { condition: service_started }
+    restart: unless-stopped
+  # CPU camera alignment reuses the SfM map without restarting GPU reconstruction.
+  room-localizer:
+    profiles: [rooms, room-gpu]
+    build: ./services/space-worker
+    entrypoint: ["python", "-m", "room_worker.localizer"]
+    init: true
+    cpus: 2
+    # Larger retained SfM maps exceed 2 GiB during CPU feature matching.
+    mem_limit: ${ROOM_LOCALIZER_MEMORY:-4g}
+    environment:
+      ROOM_DATABASE_DSN: postgresql://rooms:${ROOM_DATABASE_PASSWORD:-rooms-local}@room-db:5432/rooms
+      ROOM_S3_ENDPOINT: http://room-storage:9000
+      ROOM_S3_BUCKET: rooms
+      ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+      ROOM_SCRATCH: /scratch
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+    volumes: ["room-scratch:/scratch:ro"]
+    depends_on:
+      room-api: { condition: service_healthy }
+    restart: unless-stopped
+  room-progress:
+    profiles: [room-gpu]
+    build: ./services/space-progress
+    environment:
+      ROOM_DATABASE_DSN: postgresql://rooms:${ROOM_DATABASE_PASSWORD:-rooms-local}@room-db:5432/rooms
+      ROOM_SCRATCH: /scratch
+      ROOM_S3_ENDPOINT: http://room-storage:9000
+      ROOM_S3_BUCKET: rooms
+      ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
+      ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
+    volumes: ["room-scratch:/scratch:ro"]
+    depends_on:
+      room-db: { condition: service_healthy }
+    restart: unless-stopped
   avatar-lhmpp:
     profiles: [lhmpp]
     build:
@@ -89,6 +222,9 @@ services:
       timeout: 3s
       retries: 20
 volumes:
+  room-db:
+  room-storage:
+  room-scratch:
   avatar-lhmpp-env:
   avatar-lhm-env:
   avatar-photos:

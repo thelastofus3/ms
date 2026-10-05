@@ -1,5 +1,6 @@
 :root {
-  font-family: "Segoe UI", Arial, sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  font-size: 16px;
   color: #e5ebef;
   background: #0e151c;
   font-synthesis: none;
@@ -85,7 +86,7 @@ label {
   color: #aab8c3;
   margin: 12px 0;
 }
-input:not([type="range"]):not([type="color"]):not([type="file"]),
+input:where(:not([type="range"]):not([type="color"]):not([type="file"]):not([type="checkbox"]):not([type="radio"])),
 select {
   width: 100%;
   background: #0e1821;
@@ -96,6 +97,15 @@ select {
   margin-top: 6px;
   font: inherit;
   font-size: 13px;
+}
+input[type="checkbox"], input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: #aee9c6;
 }
 input[type="range"] {
   display: block;

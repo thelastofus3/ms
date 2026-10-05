@@ -1,0 +1,20 @@
+server:
+  port: 8003
+  forward-headers-strategy: framework
+  error:
+    include-message: never
+spring:
+  datasource:
+    url: ${ROOM_DATABASE_URL:jdbc:postgresql://localhost:55433/rooms}
+    username: ${ROOM_DATABASE_USER:rooms}
+    password: ${ROOM_DATABASE_PASSWORD:rooms-local}
+  flyway:
+    enabled: true
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

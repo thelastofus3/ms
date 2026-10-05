@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digital-room.local/contracts/space/manifest-v1",
+  "title": "Room scene package",
+  "type": "object",
+  "required": ["schemaVersion", "sceneId", "version", "ready", "units", "axes", "worldFromReconstruction", "previewCamera", "assets", "collisionReviewed", "scaleProvenance"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sceneId": { "type": "string", "format": "uuid" },
+    "version": { "type": "integer", "minimum": 1 },
+    "ready": { "type": "boolean" },
+    "units": { "enum": ["meters", "uncalibrated"] },
+    "axes": { "const": "right-handed-y-up" },
+    "worldFromReconstruction": { "$ref": "#/$defs/matrix" },
+    "previewCamera": { "$ref": "#/$defs/matrix" },
+    "assets": {
+      "type": "object", "required": ["splats", "collision"],
+      "additionalProperties": { "$ref": "#/$defs/asset" }
+    },
+    "collisionReviewed": { "type": "boolean" },
+    "calibration": { "$ref": "#/$defs/calibration" },
+    "scaleProvenance": { "type": "object", "required": ["method"], "properties": { "method": { "enum": ["unknown", "measured-distance", "marker", "sensor"] } } },
+    "navigation": {
+      "type": "object", "required": ["floorY", "boundary", "spawn", "yaw", "eyeHeight", "speed", "capsuleRadius", "capsuleHeight", "obstacles"],
+      "properties": {
+        "floorY": { "type": "number" }, "boundary": { "type": "array", "minItems": 3, "maxItems": 128, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } } },
+        "spawn": { "$ref": "#/$defs/vector" }, "yaw": { "type": "number" },
+        "eyeHeight": { "type": "number", "minimum": 0.5, "maximum": 2.5 }, "speed": { "type": "number", "exclusiveMinimum": 0, "maximum": 5 },
+        "capsuleRadius": { "type": "number", "exclusiveMinimum": 0 }, "capsuleHeight": { "type": "number", "exclusiveMinimum": 0 },
+        "obstacles": { "type": "array", "maxItems": 100, "items": { "type": "object", "required": ["center", "size"], "properties": { "center": { "$ref": "#/$defs/vector" }, "size": { "$ref": "#/$defs/vector" } } } }
+      }
+    }
+  },
+  "allOf": [{ "if": { "properties": { "ready": { "const": true } } }, "then": { "required": ["navigation"], "properties": { "units": { "const": "meters" }, "collisionReviewed": { "const": true } } } }],
+  "$defs": {
+    "point": { "type": "object", "required": ["x", "y", "z"], "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } } },
+    "calibration": {
+      "type": "object", "required": ["measurement", "meters", "floor", "boundary", "spawn", "flipUp", "reviewed", "obstacles"],
+      "properties": {
+        "measurement": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/point" } },
+        "meters": { "type": "number", "minimum": 0.05, "maximum": 100 },
+        "floor": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/point" } },
+        "boundary": { "type": "array", "minItems": 3, "maxItems": 128, "items": { "$ref": "#/$defs/point" } },
+        "spawn": { "$ref": "#/$defs/point" }, "flipUp": { "type": "boolean" }, "reviewed": { "type": "boolean" },
+        "obstacles": { "type": "array", "maxItems": 100, "items": { "type": "object", "required": ["a", "b"], "properties": { "a": { "$ref": "#/$defs/point" }, "b": { "$ref": "#/$defs/point" } } } },
+        "dimensions": { "type": ["array", "null"], "maxItems": 100, "items": { "type": "object", "required": ["id", "name", "a", "b"], "properties": { "id": { "type": "string", "maxLength": 100 }, "name": { "type": "string", "minLength": 1, "maxLength": 80 }, "a": { "$ref": "#/$defs/point" }, "b": { "$ref": "#/$defs/point" } } } }
+      }
+    },
+    "matrix": { "type": "array", "minItems": 16, "maxItems": 16, "items": { "type": "number" } },
+    "vector": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+    "asset": { "type": "object", "required": ["path", "sha256", "bytes"], "properties": { "path": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "bytes": { "type": "integer", "minimum": 1 }, "url": { "type": "string", "format": "uri" } } }
+  }
+}
