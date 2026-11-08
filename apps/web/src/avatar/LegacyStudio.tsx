@@ -17,7 +17,7 @@ export function LegacyStudio() {
     renderer = useRef<AvatarRenderer | null>(null),
     timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [token, setToken] = useState(""),
-    [name, setName] = useState("Новый аватар"),
+    [name, setName] = useState("New avatar"),
     [height, setHeight] = useState(1.8);
   const [gender, setGender] = useState(0.5),
     [age, setAge] = useState(0.4),
@@ -30,12 +30,12 @@ export function LegacyStudio() {
     [clothing, setClothing] = useState("#375a91"),
     [hairColor, setHairColor] = useState("#382923"),
     [hair, setHair] = useState("short");
-  const [message, setMessage] = useState("Откройте демо или создайте аватара"),
+  const [message, setMessage] = useState("Open the demo or create an avatar"),
     [details, setDetails] = useState(""),
     [error, setError] = useState("");
   const [job, setJob] = useState<Job | null>(null),
     [busy, setBusy] = useState(false),
-    [source, setSource] = useState("клавиатура");
+    [source, setSource] = useState("keyboard");
   const [references, setReferences] = useState<{ id: string; url: string }[]>(
     [],
   );
@@ -44,7 +44,7 @@ export function LegacyStudio() {
   const [displayedJobId, setDisplayedJobId] = useState<string | null>(null);
   function beginPreview() {
     setDisplayedJobId(null);
-    setMessage("Загрузка модели…");
+    setMessage("Loading model…");
     renderer.current?.cancelPendingLoads();
     return ++previewGeneration.current;
   }
@@ -91,11 +91,11 @@ export function LegacyStudio() {
     const info = await renderer.current!.load(manifest, bytes);
     if (!info || generation !== previewGeneration.current) return;
     setDisplayedJobId(jobId);
-    setSource("клавиатура");
-    setMessage("Модель загружена");
+    setSource("keyboard");
+    setMessage("Model loaded");
     if (info)
       setDetails(
-        `${info.bones} костей · рост ${info.height.toFixed(2)} м · ${info.clips.join(", ")}`,
+        `${info.bones} bones · height ${info.height.toFixed(2)} m · ${info.clips.join(", ")}`,
       );
   }
   async function demo() {
@@ -104,7 +104,7 @@ export function LegacyStudio() {
     try {
       const manifestResponse = await fetch("/demo/manifest.json");
       if (!manifestResponse.ok)
-        throw Error("Демо не сгенерировано. Выполните команду из README.");
+        throw Error("The demo has not been generated. Run the command from the README.");
       const manifest = await manifestResponse.json();
       await show(
         manifest,
@@ -125,7 +125,7 @@ export function LegacyStudio() {
         manifest.avatar_id !== current.avatar_id ||
         manifest.version !== current.version
       )
-        throw Error("Получена другая версия аватара");
+        throw Error("A different avatar version was received");
       await show(
         manifest,
         await (await request(base + "/model")).arrayBuffer(),
@@ -135,7 +135,7 @@ export function LegacyStudio() {
     } catch (error) {
       if (generation === previewGeneration.current) {
         setError(String(error));
-        setMessage("Не удалось загрузить модель");
+        setMessage("The model could not be loaded");
       }
     }
   }
@@ -192,7 +192,7 @@ export function LegacyStudio() {
         })
       ).json();
       setJob(next);
-      setMessage("Генерация аватара");
+      setMessage("Generating avatar");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -204,7 +204,7 @@ export function LegacyStudio() {
     setError("");
     try {
       if (references.length + files.length > 4)
-        throw Error("Можно загрузить до четырёх фотографий");
+        throw Error("Up to four photos can be uploaded");
       const added: { id: string; url: string }[] = [];
       for (const file of files) {
         const data = new FormData();
@@ -224,7 +224,7 @@ export function LegacyStudio() {
   function mode(camera: boolean) {
     if (timer.current) clearInterval(timer.current);
     renderer.current?.controller?.setSource(camera ? "camera" : "keyboard");
-    setSource(camera ? "тестовая поза" : "клавиатура");
+    setSource(camera ? "test pose" : "keyboard");
     if (camera) {
       let sequence = 0;
       timer.current = setInterval(() => {
@@ -287,33 +287,33 @@ export function LegacyStudio() {
       </header>
       <div className="heading">
         <div>
-          <p className="eyebrow">ПРОФИЛЬ УЧАСТНИКА</p>
+          <p className="eyebrow">PARTICIPANT PROFILE</p>
           <h1>
-            Ваше присутствие.
+            Your presence.
             <br />
-            <span>В цифровом пространстве.</span>
+            <span>In a digital space.</span>
           </h1>
         </div>
         <p>
-          Создайте аватара, настройте внешность
-          <br />и проверьте его движения.
+          Create an avatar, tune its appearance
+          <br />and check how it moves.
         </p>
       </div>
       <div className="studio">
         <aside>
-          <h2>01 / Внешность</h2>
+          <h2>01 / Appearance</h2>
           <label>
-            Токен доступа
+            Access token
             <input
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="Токен локального сервиса"
+              placeholder="Local service token"
               autoComplete="off"
             />
           </label>
           <label>
-            Имя
+            Name
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -321,7 +321,7 @@ export function LegacyStudio() {
             />
           </label>
           <label>
-            Рост, м
+            Height, m
             <input
               type="number"
               step=".01"
@@ -333,10 +333,10 @@ export function LegacyStudio() {
           </label>
           {(
             [
-              ["Телосложение", gender, setGender],
-              ["Возраст", age, setAge],
-              ["Мышцы", muscle, setMuscle],
-              ["Вес", weight, setWeight],
+              ["Build", gender, setGender],
+              ["Age", age, setAge],
+              ["Muscle", muscle, setMuscle],
+              ["Weight", weight, setWeight],
             ] as const
           ).map(([label, value, set]) => (
             <label key={label}>
@@ -352,12 +352,12 @@ export function LegacyStudio() {
             </label>
           ))}
           <details>
-            <summary>Черты лица</summary>
+            <summary>Facial features</summary>
             {(
               [
-                ["Ширина носа", noseWidth, setNoseWidth],
-                ["Ширина подбородка", chinWidth, setChinWidth],
-                ["Размер глаз", eyeSize, setEyeSize],
+                ["Nose width", noseWidth, setNoseWidth],
+                ["Chin width", chinWidth, setChinWidth],
+                ["Eye size", eyeSize, setEyeSize],
               ] as const
             ).map(([label, value, set]) => (
               <label key={label}>
@@ -375,7 +375,7 @@ export function LegacyStudio() {
           </details>
           <div className="colors">
             <label>
-              Кожа
+              Skin
               <input
                 type="color"
                 value={skin}
@@ -383,7 +383,7 @@ export function LegacyStudio() {
               />
             </label>
             <label>
-              Одежда
+              Clothing
               <input
                 type="color"
                 value={clothing}
@@ -391,7 +391,7 @@ export function LegacyStudio() {
               />
             </label>
             <label>
-              Волосы
+              Hair
               <input
                 type="color"
                 value={hairColor}
@@ -400,14 +400,14 @@ export function LegacyStudio() {
             </label>
           </div>
           <label>
-            Причёска
+            Hairstyle
             <select value={hair} onChange={(e) => setHair(e.target.value)}>
-              <option value="short">Короткая</option>
-              <option value="none">Без волос</option>
+              <option value="short">Short</option>
+              <option value="none">No hair</option>
             </select>
           </label>
           <label className="upload">
-            + Фото-эталоны
+            + Reference photos
             <input
               type="file"
               multiple
@@ -418,12 +418,12 @@ export function LegacyStudio() {
           </label>
           <div className="references">
             {references.map((ref) => (
-              <img key={ref.id} src={ref.url} alt="Фото-эталон участника" />
+              <img key={ref.id} src={ref.url} alt="Participant reference photo" />
             ))}
           </div>
           <p className="hint">
-            Фото служат ориентиром для ручной настройки. Автоматическое
-            восстановление лица пока не подключено.
+            Photos are a reference for manual tuning. Automatic face
+            reconstruction is not connected yet.
           </p>
           <button
             className="primary"
@@ -431,35 +431,35 @@ export function LegacyStudio() {
             onClick={create}
           >
             {busy
-              ? "Отправка…"
+              ? "Sending…"
               : job
-                ? "Создать новую версию →"
-                : "Создать аватара →"}
+                ? "Create a new version →"
+                : "Create avatar →"}
           </button>
         </aside>
         <section className="preview">
           <div className="preview-header">
-            <span>02 / Предпросмотр</span>
+            <span>02 / Preview</span>
             <span className="live">
-              ● {source === "клавиатура" ? "REMOTE" : "TEST POSE"}
+              ● {source === "keyboard" ? "REMOTE" : "TEST POSE"}
             </span>
           </div>
           <div
             ref={container}
             className="viewport"
-            aria-label="Трёхмерный аватар"
+            aria-label="3D avatar"
           />
           <div className="preview-bottom">
             <strong>{message}</strong>
             <small>{details}</small>
-            <p>Источник: {source}</p>
+            <p>Source: {source}</p>
             <div className="buttons">
-              <button onClick={demo}>Открыть демо</button>
-              <button onClick={() => mode(false)}>Клавиатура</button>
-              <button onClick={() => mode(true)}>Тест позы</button>
+              <button onClick={demo}>Open demo</button>
+              <button onClick={() => mode(false)}>Keyboard</button>
+              <button onClick={() => mode(true)}>Pose test</button>
             </div>
             <p className="hint">
-              Нажмите на сцену: W/S — движение, A/D — поворот. Мышь — обзор.
+              Click the scene: W/S move, A/D turn. Mouse looks around.
             </p>
           </div>
         </section>
@@ -468,7 +468,7 @@ export function LegacyStudio() {
         {job ? (
           <>
             <span>
-              Задание {job.id.slice(0, 8)} · {job.status}
+              Job {job.id.slice(0, 8)} · {job.status}
             </span>
             {["QUEUED", "RUNNING"].includes(job.status) && (
               <button
@@ -486,28 +486,28 @@ export function LegacyStudio() {
                   }
                 }}
               >
-                Отменить
+                Cancel
               </button>
             )}
             {job.status === "SUCCEEDED" && (
               <>
                 <button onClick={() => preview(job)}>
-                  Показать результат задания
+                  Show job result
                 </button>
                 <button
                   onClick={approve}
                   disabled={!!job.approved || displayedJobId !== job.id}
                 >
                   {job.approved
-                    ? "Внешность подтверждена"
-                    : "Подтвердить внешность"}
+                    ? "Appearance confirmed"
+                    : "Confirm appearance"}
                 </button>
-                <button onClick={download}>Скачать пакет</button>
+                <button onClick={download}>Download package</button>
               </>
             )}
           </>
         ) : (
-          <span>MPFB · Скелетная модель · Локальная генерация</span>
+          <span>MPFB · Skeletal model · Local generation</span>
         )}
       </footer>
       {error && (

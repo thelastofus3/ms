@@ -41,7 +41,7 @@ export function validateManifest(value: unknown): GaussianManifest {
       (file) => !/^[a-f0-9]{64}$/.test(m.sha256[file]),
     )
   ) {
-    throw Error("Некорректный пакет Gaussian-аватара");
+    throw Error("Invalid Gaussian avatar package");
   }
   new GaussianRig(m.rig);
   return m;
@@ -64,7 +64,7 @@ export class GaussianRig {
       !data.rest_joints.every(vector) ||
       !data.canonical_axis_angles.every(vector)
     ) {
-      throw Error("Некорректная иерархия костей");
+      throw Error("Invalid bone hierarchy");
     }
     this.inverseCanonical = this.world(data.canonical_axis_angles).map((m) =>
       m.invert(),
@@ -72,7 +72,7 @@ export class GaussianRig {
   }
   private world(angles: number[][]): Matrix4[] {
     if (angles.length !== this.data.parents.length || !angles.every(vector))
-      throw Error("Некорректная поза");
+      throw Error("Invalid pose");
     const matrices: Matrix4[] = [];
     for (let i = 0; i < angles.length; i++) {
       const parent = this.data.parents[i];
@@ -135,5 +135,33 @@ export function demoPose(
     set("left_shoulder", -0.22 * swing, 0, -lower);
     set("right_shoulder", 0.22 * swing, 0, lower);
   }
+  return pose;
+}
+
+/** Radians of gait phase per metre walked (≈ 1.7 m per full stride cycle). */
+export const GAIT_PHASE_PER_METRE = 3.6;
+/**
+ * Locomotion for tracked people: `phase` advances with distance walked, `amount` (0 standing … 1 walking)
+ * comes from speed, so the legs never slide faster or slower than the body moves.
+ */
+export function locomotionPose(rig: RigData, phase: number, amount: number): number[][] {
+  const pose = rig.parents.map(() => [0, 0, 0]);
+  const set = (name: string, x: number, y: number, z: number) => {
+    const index = rig.names.indexOf(name);
+    if (index >= 0) pose[index] = [x, y, z];
+  };
+  const a = Math.min(1, Math.max(0, amount)), swing = Math.sin(phase) * a;
+  // Arms rest along the body (T-pose shoulders rotated down) and swing opposite to the legs.
+  set("left_shoulder", -0.3 * swing, 0, -1.25);
+  set("right_shoulder", 0.3 * swing, 0, 1.25);
+  // Elbows flex forward (about the T-pose y axis): −y bends the left forearm towards +z, +y the right one.
+  set("left_elbow", 0, -0.15 - 0.25 * a, 0);
+  set("right_elbow", 0, 0.15 + 0.25 * a, 0);
+  set("left_hip", 0.4 * swing, 0, 0);
+  set("right_hip", -0.4 * swing, 0, 0);
+  // The knee bends on the swing-through half of each leg's cycle.
+  set("left_knee", 0.7 * a * Math.max(0, -Math.sin(phase)), 0, 0);
+  set("right_knee", 0.7 * a * Math.max(0, Math.sin(phase)), 0, 0);
+  set("spine3", 0.04 * a, 0.08 * swing, 0);
   return pose;
 }

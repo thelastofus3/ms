@@ -6,9 +6,10 @@ const output = fileURLToPath(new URL("../public/tracking/", import.meta.url));
 const wasm = fileURLToPath(new URL("../node_modules/@mediapipe/tasks-vision/wasm/", import.meta.url));
 const models = [
   {
-    name: "Pose Landmarker Lite v1", file: "pose_landmarker_lite.task",
-    url: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-    sha256: "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
+    // Full (not Lite): markedly steadier heel/toe/ankle landmarks for floor positions.
+    name: "Pose Landmarker Full v1", file: "pose_landmarker_full.task",
+    url: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+    sha256: "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1",
   },
   {
     name: "EfficientDet Lite0 int8 v1", file: "efficientdet_lite0.tflite",

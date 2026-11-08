@@ -29,12 +29,16 @@ export type DetectorHealth = {
   workerInferenceMs?: number;
 };
 export type PositionQuality = { positionMethod?: "floor" | "estimated"; uncertaintyMeters?: number };
-export type TrackedPerson = PositionQuality & { id: string; position: Point; confidence: number };
+export type TrackedPerson = PositionQuality & { id: string; position: Point; confidence: number;
+  /** Index of the detected pose this track was updated from in the current frame (absent for held tracks). */
+  poseIndex?: number };
 export type TrackingSnapshot = {
   sceneVersion: number; serverTime: number;
   cameras: { cameraId: string; name: string; calibrationRevision: string; streamId: string; ageMs: number; people: TrackedPerson[] }[];
 };
-export type WorldPerson = PositionQuality & { id: string; label: string; position: Point; confidence: number; expiresAt: number };
+/** A person's body in room axes (metres, hip-centred) with per-point visibility, for mirroring onto an avatar. */
+export type BodyPose = { points: [number, number, number][]; visibility: number[] };
+export type WorldPerson = PositionQuality & { id: string; label: string; position: Point; confidence: number; expiresAt: number; body?: BodyPose };
 export type LiveCameraState = {
   jobId: string; name: string; cameraRunning: boolean;
   detectionState: "idle" | "loading" | "running" | "paused" | "failed";
@@ -51,6 +55,6 @@ export type DetectorInput =
   | { type: "stop" };
 export type DetectorOutput =
   | { type: "ready" }
-  | { type: "result"; id: number; timestamp: number; landmarks: PoseLandmark[][]; detections: ImageDetection[]; inferenceMs?: number }
+  | { type: "result"; id: number; timestamp: number; landmarks: PoseLandmark[][]; worldLandmarks?: PoseLandmark[][]; detections: ImageDetection[]; inferenceMs?: number }
   | { type: "error"; message: string }
   | { type: "closed" };

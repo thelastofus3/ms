@@ -116,14 +116,14 @@ export class AvatarRenderer {
       manifest.schema_version !== "1.0" ||
       manifest.representation !== "skinned-glb"
     )
-      throw Error("Неподдерживаемый формат аватара");
+      throw Error("Unsupported avatar format");
     const hash = Array.from(
       new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     )
       .map((x) => x.toString(16).padStart(2, "0"))
       .join("");
     if (hash !== manifest.sha256)
-      throw Error("Контрольная сумма модели не совпадает");
+      throw Error("The model checksum does not match");
     if (this.disposed || generation !== this.loadGeneration) return;
     const gltf = await new GLTFLoader().parseAsync(bytes, "");
     if (this.disposed || generation !== this.loadGeneration) {
@@ -134,7 +134,7 @@ export class AvatarRenderer {
     try {
       for (const [name, b] of Object.entries(manifest.rig)) {
         const node = await gltf.parser.getDependency("node", b.node);
-        if (!node.isBone) throw Error(`Не найдена кость ${name}`);
+        if (!node.isBone) throw Error(`Bone not found: ${name}`);
         bindings[name] = {
           bone: node,
           rest: new THREE.Quaternion().fromArray(b.rest),

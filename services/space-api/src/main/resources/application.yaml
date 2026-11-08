@@ -1,11 +1,16 @@
 server:
   port: 8003
+  tomcat:
+    connection-timeout: 60s
   forward-headers-strategy: framework
   error:
     include-message: never
+room:
+  auth:
+    trusted-proxies: ${ROOM_AUTH_TRUSTED_PROXIES:}
 spring:
   datasource:
-    url: ${ROOM_DATABASE_URL:jdbc:postgresql://localhost:55433/rooms}
+    url: ${ROOM_DATABASE_URL:jdbc:postgresql://localhost:15433/rooms}
     username: ${ROOM_DATABASE_USER:rooms}
     password: ${ROOM_DATABASE_PASSWORD:rooms-local}
   flyway:

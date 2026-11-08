@@ -25,6 +25,7 @@ export function floorFrame(c: Calibration, m: RoomManifest) {
   return { origin, forward, up, right, back };
 }
 export function previewTransform(c: Calibration, m: RoomManifest): THREE.Matrix4 {
+  if (m.sourceType === "gaussian-ply") return new THREE.Matrix4().fromArray(m.worldFromReconstruction);
   const frame = floorFrame(c, m);
   if (frame) {
     const scale = metersPerUnit(c) ?? (m.ready ? new THREE.Vector3().setFromMatrixScale(new THREE.Matrix4().fromArray(m.worldFromReconstruction)).x : 1);

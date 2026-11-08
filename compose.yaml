@@ -4,7 +4,6 @@ services:
     build: ./apps/web
     ports: ["127.0.0.1:5173:80"]
     volumes:
-      - ./apps/web/public/gaussian-demo:/usr/share/nginx/html/gaussian-demo:ro
       - ./apps/web/public/demo:/usr/share/nginx/html/demo:ro
     depends_on:
       room-api: { condition: service_healthy }
@@ -18,7 +17,7 @@ services:
       POSTGRES_USER: rooms
       POSTGRES_PASSWORD: ${ROOM_DATABASE_PASSWORD:-rooms-local}
       POSTGRES_DB: rooms
-    ports: ["127.0.0.1:55433:5432"]
+    ports: ["127.0.0.1:${ROOM_DATABASE_HOST_PORT:-15433}:5432"]
     volumes: ["room-db:/var/lib/postgresql/data"]
     restart: unless-stopped
     healthcheck:
@@ -64,6 +63,14 @@ services:
       ROOM_DATABASE_URL: jdbc:postgresql://room-db:5432/rooms
       ROOM_DATABASE_USER: rooms
       ROOM_DATABASE_PASSWORD: ${ROOM_DATABASE_PASSWORD:-rooms-local}
+      ROOM_ADMIN_USERNAME: ${ROOM_ADMIN_USERNAME:-admin}
+      ROOM_ADMIN_PASSWORD: ${ROOM_ADMIN_PASSWORD:-}
+      ROOM_JWT_SECRET: ${ROOM_JWT_SECRET:-}
+      ROOM_AUTH_TRUSTED_PROXIES: ${ROOM_AUTH_TRUSTED_PROXIES:-web}
+      ROOM_ACCOUNT_STORAGE_GIB: ${ROOM_ACCOUNT_STORAGE_GIB:-20}
+      ROOM_ACCOUNT_PENDING_UPLOADS: ${ROOM_ACCOUNT_PENDING_UPLOADS:-3}
+      ROOM_ACCOUNT_ACTIVE_JOBS: ${ROOM_ACCOUNT_ACTIVE_JOBS:-2}
+      ROOM_UPLOAD_TTL_HOURS: ${ROOM_UPLOAD_TTL_HOURS:-24}
       ROOM_S3_ENDPOINT: http://room-storage:9000
       ROOM_S3_PUBLIC_ENDPOINT: ${ROOM_S3_PUBLIC_ENDPOINT:-http://127.0.0.1:9000}
       ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
@@ -89,7 +96,7 @@ services:
       ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
       ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
       ROOM_SCRATCH: /scratch
-      ROOM_MAX_SCRATCH_GIB: ${ROOM_MAX_SCRATCH_GIB:-30}
+      ROOM_MAX_SCRATCH_GIB: ${ROOM_MAX_SCRATCH_GIB:-120}
       ROOM_MAX_SPLATS: ${ROOM_MAX_SPLATS:-2500000}
     volumes: ["room-scratch:/scratch"]
     depends_on:
@@ -102,7 +109,7 @@ services:
     build: ./services/space-worker
     entrypoint: ["python", "-m", "room_worker.localizer"]
     init: true
-    cpus: 2
+    cpus: 4
     # Larger retained SfM maps exceed 2 GiB during CPU feature matching.
     mem_limit: ${ROOM_LOCALIZER_MEMORY:-4g}
     environment:
@@ -112,8 +119,8 @@ services:
       ROOM_S3_ACCESS_KEY: ${ROOM_S3_ACCESS_KEY:-rooms-local}
       ROOM_S3_SECRET_KEY: ${ROOM_S3_SECRET_KEY:-rooms-local-secret}
       ROOM_SCRATCH: /scratch
-      OMP_NUM_THREADS: "2"
-      OPENBLAS_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
     volumes: ["room-scratch:/scratch:ro"]
     depends_on:
       room-api: { condition: service_healthy }
@@ -198,6 +205,9 @@ services:
       dockerfile: Dockerfile.photos
     ports:
       - "127.0.0.1:8002:8002"
+    environment:
+      ROOM_AUTH_API_URL: http://room-api:8003/v1/rooms/auth/me
+      ROOM_BROWSER_ORIGINS: ${ROOM_BROWSER_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}
     volumes:
       - avatar-photos:/data
     restart: unless-stopped
@@ -206,6 +216,23 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+  # Builds avatars from photo sets queued in avatar-photos (cameras → masks → Gaussian training).
+  # Image is FROM masterproject-room-worker: build room-worker first. Shares the GPU with room-worker.
+  avatar-worker:
+    profiles: [room-gpu, avatar-gpu]
+    build: ./services/avatar/multiview
+    image: avatar-multiview
+    gpus: all
+    shm_size: 2gb
+    environment:
+      PHOTO_DATA_DIR: /data
+      AVATAR_TRAIN_STEPS: ${AVATAR_TRAIN_STEPS:-15000}
+    volumes:
+      - avatar-photos:/data
+      - ./.runtime/models:/models
+      # Live code during development; the image also contains a copy.
+      - ./services/avatar/multiview:/code:ro
+    restart: unless-stopped
   avatar-db:
     image: postgres:17-alpine
     environment:

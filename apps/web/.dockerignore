@@ -3,6 +3,5 @@ dist
 test-results
 playwright-report
 public/demo
-public/gaussian-demo
 public/tracking
 *.log

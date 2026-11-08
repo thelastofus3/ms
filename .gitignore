@@ -14,7 +14,6 @@ playwright-report/
 .env.*
 !.env.example
 apps/web/public/demo/
-apps/web/public/gaussian-demo/
 apps/web/public/tracking/
 dataset/
 

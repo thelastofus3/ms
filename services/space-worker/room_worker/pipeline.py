@@ -8,11 +8,13 @@ from .preprocess import prepare
 from .geometry import select_room_model, sanitize_camera_depths, build_collision
 from .export import compress, digest
 from .settings import PROFILES, training_schedule
+from .input_identity import validate_media
 
-PIPELINE_REVISION = "video-overlap-shared-intrinsics-parallax-v2"
+PIPELINE_REVISION = "pinned-inputs-video-overlap-shared-intrinsics-parallax-v3"
 
 
 def reconstruct(job, storage, work: Path, lease):
+    validate_media(job["media"])
     profile = PROFILES[job["profile"]]
     started = time.monotonic()
     report = {"profile": profile, "pipelineRevision": PIPELINE_REVISION,
@@ -81,8 +83,8 @@ def reconstruct(job, storage, work: Path, lease):
         pairs.write_text("\n".join(f"{a.name} {b.name}" for i, a in enumerate(images) for j, b in enumerate(images)
                                     if j > i and (not video or j-i <= 12 or i%12 == 0 or j%12 == 0)))
         run(["colmap", "matches_importer", "--database_path", database, "--match_list_path", pairs,
-             "--match_type", "pairs", "--SiftMatching.use_gpu", "1", "--SiftMatching.guided_matching", "1"], work, lease)
-        run(["colmap", "mapper", "--database_path", database, "--image_path", dataset/"images", "--output_path", sparse], work, lease)
+             "--match_type", "pairs", "--SiftMatching.use_gpu", "1", "--SiftMatching.guided_matching", "1"], work, lease, 14400)
+        run(["colmap", "mapper", "--database_path", database, "--image_path", dataset/"images", "--output_path", sparse], work, lease, 14400)
         report["poses"] = select_room_model(sparse, report["capture"]["selectedFrames"], work)
         checkpoint("poses", ["dataset"])
     lease.stage("geometry", 0)
@@ -101,19 +103,29 @@ def reconstruct(job, storage, work: Path, lease):
     if cached_geometry and not invalidate:
         report["geometry"] = cached_geometry["geometry"]
     else:
+        from PIL import Image
+        # Undistortion may otherwise upscale frames (720p video became 1898px), inflating depth maps.
+        with Image.open(next((dataset/"images").glob("*.jpg"))) as frame:
+            depth_size = min(profile["resolution"], max(frame.size))
         cached_dense = recover("poses", "dense")
         if cached_dense:
+            undistorted, stale = next((dense/"images").glob("*"), None), True
+            if undistorted:
+                with Image.open(undistorted) as image:
+                    stale = max(image.size) > depth_size
+            if stale:
+                shutil.rmtree(dense)
             # Reuse only immutable checkpoints with matching capture/tool fingerprints.
-            for name in invalidate:
+            for name in [] if stale else invalidate:
                 for folder in ("depth_maps", "normal_maps", "consistency_graphs"):
                     for path in (dense/"stereo"/folder).glob(name+".*.bin"):
                         path.unlink()
         run(["colmap", "image_undistorter", "--image_path", dataset/"images", "--input_path", dataset/"colmap/sparse/0",
-             "--output_path", dense, "--output_type", "COLMAP", "--max_image_size", profile["resolution"]], work, lease)
+             "--output_path", dense, "--output_type", "COLMAP", "--max_image_size", depth_size], work, lease)
         checkpoint("poses", ["dataset", "dense"])
         lease.progress("Depth estimation", "Starting this step", force=True)
         run(["colmap", "patch_match_stereo", "--workspace_path", dense, "--PatchMatchStereo.geom_consistency", "true",
-             "--PatchMatchStereo.cache_size", "2", "--PatchMatchStereo.max_image_size", profile["resolution"]], work, lease, 14400)
+             "--PatchMatchStereo.cache_size", "2", "--PatchMatchStereo.max_image_size", depth_size], work, lease, 28800)
         report["geometry"] = build_collision(dense, output, report["poses"], lease)
     schedule = training_schedule(profile, report["poses"]["registeredFrames"])
     report["trainingSchedule"] = schedule
@@ -147,7 +159,7 @@ def reconstruct(job, storage, work: Path, lease):
              "--pipeline.model.use-scale-regularization", "True", "colmap",
              "--downscale-factor", "1", "--orientation-method", "none", "--center-method", "none",
              "--auto-scale-poses", "False", "--assume-colmap-world-coordinate-convention", "False", "--scale-factor", "1.0",
-             "--load-3D-points", "True"], work, lease, 14400)
+             "--load-3D-points", "True"], work, lease, 28800)
         configs = sorted(training.rglob("config.yml"))
     else:
         configs = [latest.parent.parent/"config.yml"]

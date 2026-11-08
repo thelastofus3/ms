@@ -7,7 +7,7 @@ BUCKET = os.environ.get("ROOM_S3_BUCKET", "rooms")
 SCRATCH = Path(os.environ.get("ROOM_SCRATCH", "/scratch")).resolve()
 PROFILES = {
     "local": {"frames": 180, "max_video_frames": 360, "resolution": 1280, "steps": 15000, "split_until": 6000, "gradient": 0.0012, "sh": 2},
-    "quality": {"frames": 400, "max_video_frames": 600, "resolution": 1920, "steps": 30000, "split_until": 15000, "gradient": 0.0008, "sh": 3},
+    "quality": {"frames": 400, "max_video_frames": 900, "resolution": 1920, "steps": 30000, "split_until": 15000, "gradient": 0.0008, "sh": 3},
 }
 
 

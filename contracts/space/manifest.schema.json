@@ -9,12 +9,14 @@
     "sceneId": { "type": "string", "format": "uuid" },
     "version": { "type": "integer", "minimum": 1 },
     "ready": { "type": "boolean" },
+    "sourceType": { "enum": ["reconstruction", "gaussian-ply"] },
+    "bounds": { "type": "object", "required": ["min", "max"], "properties": { "min": { "$ref": "#/$defs/point" }, "max": { "$ref": "#/$defs/point" } } },
     "units": { "enum": ["meters", "uncalibrated"] },
     "axes": { "const": "right-handed-y-up" },
     "worldFromReconstruction": { "$ref": "#/$defs/matrix" },
     "previewCamera": { "$ref": "#/$defs/matrix" },
     "assets": {
-      "type": "object", "required": ["splats", "collision"],
+      "type": "object", "required": ["splats"],
       "additionalProperties": { "$ref": "#/$defs/asset" }
     },
     "collisionReviewed": { "type": "boolean" },
@@ -31,7 +33,12 @@
       }
     }
   },
-  "allOf": [{ "if": { "properties": { "ready": { "const": true } } }, "then": { "required": ["navigation"], "properties": { "units": { "const": "meters" }, "collisionReviewed": { "const": true } } } }],
+  "allOf": [
+    { "if": { "required": ["sourceType"], "properties": { "sourceType": { "const": "gaussian-ply" } } },
+      "then": { "properties": { "ready": { "const": false }, "units": { "const": "uncalibrated" }, "collisionReviewed": { "const": false } } },
+      "else": { "properties": { "assets": { "required": ["collision"] } } } },
+    { "if": { "properties": { "ready": { "const": true } } }, "then": { "required": ["navigation"], "properties": { "units": { "const": "meters" }, "collisionReviewed": { "const": true }, "assets": { "required": ["collision"] } } } }
+  ],
   "$defs": {
     "point": { "type": "object", "required": ["x", "y", "z"], "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } } },
     "calibration": {

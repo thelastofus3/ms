@@ -3,9 +3,26 @@ import { insideBoundary } from "./geometry";
 import { locatePerson, type PositionDetection } from "./positioning";
 import type { CameraCalibration, PoseLandmark, TrackedPerson, WorldFloorPoint } from "./types";
 
-type Detection = PositionDetection;
-type Track = Detection & { id: string; seen: number; vx: number; vz: number };
+type Detection = PositionDetection & { poseIndex?: number };
+/** One Euro filter: strong smoothing while standing still, little lag while walking. */
+class OneEuro {
+  private value: number | undefined;
+  private derivative = 0;
+  constructor(private minCutoff: number, private beta: number) {}
+  filter(value: number, dt: number): number {
+    if (this.value === undefined) return this.value = value;
+    const smoothing = (cutoff: number) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
+    this.derivative += smoothing(1) * ((value - this.value) / dt - this.derivative);
+    this.value += smoothing(this.minCutoff + this.beta * Math.abs(this.derivative)) * (value - this.value);
+    return this.value;
+  }
+  reset(value: number) { this.value = value; this.derivative = 0; }
+}
+type Track = Detection & { id: string; seen: number; vx: number; vz: number; hits: number; fx: OneEuro; fz: OneEuro };
 const dist = (a: WorldFloorPoint, b: WorldFloorPoint) => Math.hypot(a.x - b.x, a.z - b.z);
+/** A confirmed person stays visible at the last position through short detection gaps (turning, brief occlusion). */
+export const HOLD_MS = 1200;
+const filters = (estimated: boolean) => estimated ? [new OneEuro(0.4, 0.4), new OneEuro(0.4, 0.4)] : [new OneEuro(0.8, 0.7), new OneEuro(0.8, 0.7)];
 export class PersonTracker {
   diagnostics: string[] = [];
   private tracks: Track[] = [];
@@ -20,10 +37,10 @@ export class PersonTracker {
     if (context !== this.context) { this.reset(); this.context = context; }
     if (timestamp <= this.lastTimestamp) return [];
     this.lastTimestamp = timestamp;
-    this.tracks = this.tracks.filter(track => timestamp - track.seen <= 750).slice(-10);
+    this.tracks = this.tracks.filter(track => timestamp - track.seen <= HOLD_MS).slice(-10);
     const detections: Detection[] = [];
-    for (const pose of landmarks.slice(0, 5)) {
-      const result = locatePerson(pose, camera, navigation), found = result.detection;
+    for (const [poseIndex, pose] of landmarks.slice(0, 5).entries()) {
+      const result = locatePerson(pose, camera, navigation), found: Detection | undefined = result.detection && { ...result.detection, poseIndex };
       if (!found) { if (result.reason) this.diagnostics.push(result.reason); continue; }
       if (!detections.some(other => dist(other, found) < 0.18)) detections.push(found);
       else this.diagnostics.push("Overlapping person positions were merged to avoid duplicate markers.");
@@ -56,25 +73,31 @@ export class PersonTracker {
           this.diagnostics.push("People overlap or cross in the camera view. Waiting for an unambiguous track."); return;
         }
         const track = this.tracks[chosen], dt = Math.max(0.01, (timestamp - track.seen) / 1000);
-        const alpha = 1 - Math.exp(-dt / 0.12);
-        let nextX = track.x + alpha * (detection.x - track.x), nextZ = track.z + alpha * (detection.z - track.z);
+        // Switching between floor and body-size estimates restarts smoothing at the new measurement type.
+        if (track.positionMethod !== detection.positionMethod) [track.fx, track.fz] = filters(detection.positionMethod === "estimated");
+        let nextX = track.fx.filter(detection.x, dt), nextZ = track.fz.filter(detection.z, dt);
         // A blend between valid positions can cross the cutout of a concave room.
-        if (!insideBoundary({ x: nextX, z: nextZ }, navigation.boundary)) { nextX = detection.x; nextZ = detection.z; }
+        if (!insideBoundary({ x: nextX, z: nextZ }, navigation.boundary)) { nextX = detection.x; nextZ = detection.z; track.fx.reset(nextX); track.fz.reset(nextZ); }
         let vx = (nextX - track.x) / dt, vz = (nextZ - track.z) / dt;
         const speed = Math.hypot(vx, vz);
         if (speed > 3) { vx *= 3 / speed; vz *= 3 / speed; }
         track.vx = track.vx * 0.5 + vx * 0.5; track.vz = track.vz * 0.5 + vz * 0.5;
-        track.x = nextX; track.z = nextZ; track.seen = timestamp; track.confidence = detection.confidence;
+        track.x = nextX; track.z = nextZ; track.seen = timestamp; track.confidence = detection.confidence; track.hits++;
         track.positionMethod = detection.positionMethod; track.uncertaintyMeters = detection.uncertaintyMeters;
-        visible.push({ id: track.id, position: { x: track.x, y: navigation.floorY, z: track.z }, confidence: track.confidence, positionMethod: track.positionMethod, uncertaintyMeters: track.uncertaintyMeters });
+        visible.push({ id: track.id, position: { x: track.x, y: navigation.floorY, z: track.z }, confidence: track.confidence, positionMethod: track.positionMethod, uncertaintyMeters: track.uncertaintyMeters, poseIndex: detection.poseIndex });
       } else {
         // Unmatched observations near an existing track may be a split/occlusion.
         if (predictions.some(prediction => dist(prediction, detection) < 0.3)) { this.diagnostics.push("A nearby observation may be the same person. Waiting for a distinct track."); return; }
-        const track: Track = { ...detection, id: String(++this.nextId), seen: timestamp, vx: 0, vz: 0 };
+        const [fx, fz] = filters(detection.positionMethod === "estimated");
+        fx.reset(detection.x); fz.reset(detection.z);
+        const track: Track = { ...detection, id: String(++this.nextId), seen: timestamp, vx: 0, vz: 0, hits: 1, fx, fz };
         this.tracks.push(track);
-        visible.push({ id: track.id, position: { x: track.x, y: navigation.floorY, z: track.z }, confidence: track.confidence, positionMethod: track.positionMethod, uncertaintyMeters: track.uncertaintyMeters });
+        visible.push({ id: track.id, position: { x: track.x, y: navigation.floorY, z: track.z }, confidence: track.confidence, positionMethod: track.positionMethod, uncertaintyMeters: track.uncertaintyMeters, poseIndex: detection.poseIndex });
       }
     });
+    // Held tracks keep their last smoothed position (no extrapolation) with reduced confidence.
+    for (const track of this.tracks) if (track.seen < timestamp && track.hits >= 3 && !visible.some(person => person.id === track.id))
+      visible.push({ id: track.id, position: { x: track.x, y: navigation.floorY, z: track.z }, confidence: track.confidence * 0.6, positionMethod: track.positionMethod, uncertaintyMeters: track.uncertaintyMeters });
     return visible;
   }
 }

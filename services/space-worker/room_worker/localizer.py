@@ -222,7 +222,9 @@ def run_command(command, directory, lease, timeout, error, progress_path=None):
                         last_progress = progress
                 time.sleep(.25)
             if process.returncode:
-                LOGGER.warning("Camera localization subprocess %s exited with code %s", Path(str(command[0])).name, process.returncode)
+                tail = (directory / "private-command.log").read_bytes()[-600:].decode(errors="replace").strip().splitlines()
+                LOGGER.warning("Camera localization subprocess %s exited with code %s: %s", Path(str(command[0])).name, process.returncode,
+                               tail[-1] if tail else "no output")
                 raise LocalizationError(error)
         finally:
             if process.poll() is None:
@@ -536,7 +538,7 @@ def register_image(attempt, image_path, manifest, live_size, temporary, lease):
         (temporary / 'learned-input.json').write_text(json.dumps(config))
         run_command([sys.executable, '-m', 'room_worker.learned_localizer', temporary / 'learned-input.json',
                      temporary / 'learned-result.json', temporary / 'learned-progress.json'],
-                    temporary, lease, min(240, max(1, lease.deadline-time.monotonic())),
+                    temporary, lease, min(450, max(1, lease.deadline-time.monotonic())),
                     'Additional room background matching could not validate this camera. Keep the camera fixed, improve lighting and retry with more static background.',
                     progress_path=temporary / 'learned-progress.json')
         result = json.loads((temporary / 'learned-result.json').read_text())

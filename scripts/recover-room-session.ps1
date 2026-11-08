@@ -16,10 +16,11 @@ try {
     $recoverySql = @"
 DELETE FROM room_session_recovery WHERE expires_at<=now();
 INSERT INTO room_session_recovery(token_hash,owner,job_id,expires_at)
-SELECT '$recoveryHash',owner,id,now()+interval '1 hour' FROM room_jobs WHERE id='$JobId'
+SELECT '$recoveryHash',owner,id,now()+interval '1 hour' FROM room_jobs
+WHERE id='$JobId' AND owner ~ '^[A-Za-z0-9_-]{43}$'
 RETURNING job_id;
 "@
     $recoveryResult = $recoverySql | docker compose exec -T room-db psql -X -v ON_ERROR_STOP=1 -U rooms -d rooms -At
-    if ($LASTEXITCODE -ne 0 -or $recoveryResult -notcontains $JobId.ToString()) { throw 'Room not found or recovery link could not be generated.' }
+    if ($LASTEXITCODE -ne 0 -or $recoveryResult -notcontains $JobId.ToString()) { throw 'Legacy room not found. Account-owned rooms require account login, not a recovery link.' }
     Write-Output "$Address/#rooms?recover=$recoveryToken"
 } finally { Pop-Location }

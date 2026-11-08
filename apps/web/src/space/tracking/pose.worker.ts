@@ -81,23 +81,28 @@ scope.onmessage = async event => {
       const x = clamp(box.originX / width), y = clamp(box.originY / height), right = clamp((box.originX + box.width) / width), bottom = clamp((box.originY + box.height) / height);
       return right > x && bottom > y ? [{ x, y, width: right - x, height: bottom - y, confidence: clamp(category.score), source: "object" as const }] : [];
     }).slice(0, 5);
-    let landmarks: PoseLandmark[][] = [];
+    let landmarks: PoseLandmark[][] = [], world: PoseLandmark[][] = [];
     // Boxes remain useful for cropped upper bodies. Feet come only from reliable
     // pose landmarks; a box bottom never becomes a fabricated floor contact.
     // Pose inference must not depend on EfficientDet recognizing the person.
     const result = pose.detectForVideo(input, message.inferenceTimestamp);
-    try { landmarks = result.landmarks.map(person => person.map(landmark => ({ x: landmark.x, y: landmark.y, z: landmark.z, visibility: landmark.visibility, presence: (landmark as PoseLandmark).presence }))); }
+    try {
+      landmarks = result.landmarks.map(person => person.map(landmark => ({ x: landmark.x, y: landmark.y, z: landmark.z, visibility: landmark.visibility, presence: (landmark as PoseLandmark).presence })));
+      // Metric 3D body points (hip-centred, camera-aligned axes) for mirroring the person's pose on an avatar.
+      world = result.worldLandmarks.map(person => person.map(landmark => ({ x: landmark.x, y: landmark.y, z: landmark.z, visibility: landmark.visibility })));
+    }
     finally { result.close(); }
     if (!detections.length) {
       // Suppress weak/degenerate pose-only observations rather than counting them
       // as people. Reliable cropped faces/torso poses remain usable without a box.
-      landmarks = landmarks.filter(person => {
+      const kept = landmarks.map((person, index) => ({ person, index })).filter(({ person }) => {
         const box = poseBox(person);
         if (!box) return false;
         detections.push(box); return true;
       }).slice(0, 5);
+      landmarks = kept.map(item => item.person); world = kept.map(item => world[item.index] ?? []);
     }
-    scope.postMessage({ type: "result", id: message.id, timestamp: message.timestamp, landmarks, detections: detections.slice(0, 5), inferenceMs: Math.max(0, performance.now() - started) });
+    scope.postMessage({ type: "result", id: message.id, timestamp: message.timestamp, landmarks, worldLandmarks: world, detections: detections.slice(0, 5), inferenceMs: Math.max(0, performance.now() - started) });
   } catch (reason) { error(reason); }
   finally { bitmap.close(); }
 };

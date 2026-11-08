@@ -217,7 +217,7 @@ def improve_order(names, checked, model, hypothesis, scale):
 def run(config_path, output_path, progress_path):
     config = json.loads(config_path.read_text())
     folder = output_path.parent
-    deadline = time.monotonic()+225
+    deadline = time.monotonic()+420
     manifest, size, live_size = config['manifest'], tuple(config['size']), tuple(config['liveSize'])
     scale = np.linalg.norm(np.asarray(manifest['worldFromReconstruction']).reshape(4, 4, order='F')[:3, 0])
     model = pycolmap.Reconstruction(config['reference'])
@@ -233,7 +233,7 @@ def run(config_path, output_path, progress_path):
     import torch
     from lightglue import ALIKED, LightGlue
     from lightglue.utils import load_image
-    torch.set_num_threads(max(1, min(2, int(os.environ.get('ROOM_LOCALIZER_TORCH_THREADS', '2')))))
+    torch.set_num_threads(max(1, min(4, int(os.environ.get('ROOM_LOCALIZER_TORCH_THREADS', '4')))))
     torch.hub.set_dir(str(weights['aliked'].parent.parent))
     extractor = ALIKED(max_num_keypoints=2048).eval().cpu()
     matcher = LightGlue(features='aliked', flash=False).eval().cpu()
@@ -316,5 +316,5 @@ if __name__ == '__main__':
     try:
         run(*(Path(value) for value in sys.argv[1:4]))
     except Exception as error:
-        print(f'Learned camera localization stopped: {type(error).__name__}', file=sys.stderr)
+        print(f"Learned camera localization stopped: {type(error).__name__}: {error}", file=sys.stderr)
         sys.exit(1)

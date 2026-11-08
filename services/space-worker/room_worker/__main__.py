@@ -7,8 +7,9 @@ import threading
 import boto3
 from botocore.config import Config
 from .settings import BUCKET, SCRATCH
-from .jobs import claim, Lease, Stopped, fail
+from .jobs import claim, Lease, Stopped, StorageQuotaExceeded, confirm_output, fail
 from .pipeline import reconstruct
+from .output_quota import reserve_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -27,6 +28,8 @@ def main():
     logging.info("GPU worker ready: %s; waiting for room jobs", torch.cuda.get_device_name(0))
     while True:
         job = None
+        work = None
+        allocations = {}
         try:
             job = claim()
             if job is None:
@@ -40,6 +43,9 @@ def main():
                 output, report = reconstruct(job, storage, work, lease)
                 lease.stage("publication", 0)
                 paths = sorted(output.iterdir())
+                lease.check()
+                reserve_files(job, paths, prefix, allocations)
+                lease.check()
                 total_bytes = sum(path.stat().st_size for path in paths)
                 uploaded = 0
                 upload_lock = threading.Lock()
@@ -52,6 +58,7 @@ def main():
                 for path in paths:
                     lease.check()
                     storage.upload_file(str(path), BUCKET, prefix+path.name, Callback=upload_progress)
+                    confirm_output(job, prefix+path.name, path.stat().st_size)
                 lease.publish(prefix+"manifest.json", report)
                 logging.info("Reconstructed %s; awaiting metric calibration", job["id"])
         except Exception as error:
@@ -60,12 +67,20 @@ def main():
                 try:
                     diagnostics = {"workerError": type(error).__name__, "profile": job["profile"]}
                     # Logs are private storage artifacts; clients receive no raw command paths or secrets.
-                    logs = work/"logs"
-                    if logs.exists():
-                        for log in logs.glob("*.log"):
-                            storage.upload_file(str(log), BUCKET, prefix+"logs/"+log.name)
-                        diagnostics["logPrefix"] = prefix+"logs/"
-                    fail(job, "Worker interrupted; retry after checking worker/storage availability" if isinstance(error, Stopped) else str(error), diagnostics)
+                    logs = work/"logs" if work else None
+                    if logs and logs.exists() and not isinstance(error, (StorageQuotaExceeded, Stopped)):
+                        try:
+                            paths = sorted(log for log in logs.glob("*.log") if log.stat().st_size > 0)
+                            reserve_files(job, paths, prefix+"logs/", allocations)
+                            for log in paths:
+                                storage.upload_file(str(log), BUCKET, prefix+"logs/"+log.name)
+                                confirm_output(job, prefix+"logs/"+log.name, log.stat().st_size)
+                            if paths:
+                                diagnostics["logPrefix"] = prefix+"logs/"
+                        except Exception:
+                            logging.exception("Could not reserve or retain attempt logs")
+                    fail(job, "Worker interrupted; retry after checking worker/storage availability" if isinstance(error, Stopped) else str(error),
+                         diagnostics, interrupted=isinstance(error, Stopped))
                 except Exception:
                     logging.exception("Could not persist failure; lease recovery will reclaim the job")
             time.sleep(5)

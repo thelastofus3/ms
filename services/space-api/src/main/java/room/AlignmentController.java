@@ -23,11 +23,12 @@ public class AlignmentController {
     private final ObjectStorage storage;
     private final ObjectMapper json;
     private final TrackingController tracking;
+    private final RoomQuotaService quota;
     private final TransactionTemplate tx;
     public record Request(String name,UUID cameraId,Integer sceneVersion,Integer imageWidth,Integer imageHeight,String imageDataUrl) {}
 
-    public AlignmentController(JdbcTemplate db,ObjectStorage storage,ObjectMapper json,TrackingController tracking,PlatformTransactionManager manager) {
-        this.db=db;this.storage=storage;this.json=json;this.tracking=tracking;this.tx=new TransactionTemplate(manager);
+    public AlignmentController(JdbcTemplate db,ObjectStorage storage,ObjectMapper json,TrackingController tracking,PlatformTransactionManager manager,RoomQuotaService quota) {
+        this.db=db;this.storage=storage;this.json=json;this.tracking=tracking;this.tx=new TransactionTemplate(manager);this.quota=quota;
     }
     private String owner(HttpServletRequest request) { return (String)request.getAttribute("roomOwner"); }
     private String encode(Object value) { try { return json.writeValueAsString(value); } catch(Exception e) { throw new IllegalStateException(e); } }
@@ -50,12 +51,35 @@ public class AlignmentController {
         return result;
     }
     private void deleteFrame(Map<String,Object> row) {
-        if(row.get("frame_deleted_at")!=null)return;
-        try { storage.delete(row.get("frame_key").toString());db.update("UPDATE room_camera_alignments SET frame_deleted_at=now() WHERE id=? AND frame_deleted_at IS NULL",row.get("id")); }
+        try {
+            String key=row.get("frame_key").toString();
+            if(row.get("frame_deleted_at")==null)storage.delete(key);
+            if(!absent(key))return;
+            db.update("UPDATE room_camera_alignments SET frame_deleted_at=now() WHERE id=? AND frame_deleted_at IS NULL",row.get("id"));
+            String owner=db.queryForObject("SELECT owner FROM room_jobs WHERE id=?",String.class,row.get("job_id"));
+            quota.releaseVerifiedAbsent(owner,key);
+        }
         catch(RuntimeException e) { LoggerFactory.getLogger(AlignmentController.class).warn("Camera alignment frame cleanup will be retried for {}",row.get("id")); }
     }
+    private boolean absent(String key) {
+        try { storage.size(key);return false; }
+        catch(software.amazon.awssdk.services.s3.model.S3Exception error) {
+            if(error.statusCode()==404)return true;
+            throw error;
+        }
+    }
+    private void cleanupFrames(UUID job) {
+        // Run only after resource transactions finish. The localizer may already
+        // have deleted a READY frame; its marker permits absence reconciliation.
+        try {
+            for(var row:db.queryForList("SELECT * FROM room_camera_alignments WHERE job_id=? AND (state IN ('FAILED','CANCELLED','APPLIED') OR frame_deleted_at IS NOT NULL)",job))
+                deleteFrame(row);
+        } catch(RuntimeException error) {
+            LoggerFactory.getLogger(AlignmentController.class).warn("Camera alignment allocation reconciliation will be retried for {}",job);
+        }
+    }
     private void expire(UUID job) {
-        var rows=db.queryForList("""
+        db.queryForList("""
             UPDATE room_camera_alignments a SET state='FAILED',stage='expired',error='Camera alignment expired or its room/camera setup changed. Align automatically again.',
               lease_token=NULL,lease_until=NULL,result=NULL,updated_at=now()
             WHERE a.job_id=? AND a.state IN ('QUEUED','RUNNING','READY') AND (
@@ -65,7 +89,6 @@ public class AlignmentController {
               (a.camera_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM room_tracking_cameras c WHERE c.id=a.camera_id AND c.job_id=a.job_id AND c.revision=a.camera_revision)))
             RETURNING a.*
             """,job);
-        rows.forEach(this::deleteFrame);
     }
     static byte[] jpeg(Request body) {
         if(body==null || body.name()==null || body.name().trim().isEmpty() || body.name().trim().length()>100 || body.sceneVersion()==null || body.sceneVersion()<1 ||
@@ -97,7 +120,9 @@ public class AlignmentController {
     @PostMapping
     public Map<String,Object> create(@PathVariable UUID job,@RequestBody Request body,HttpServletRequest request) {
         ownedJob(job,owner(request),false);byte[] frame=jpeg(body);UUID id=UUID.randomUUID();String key="camera-alignments/"+job+"/"+id+".jpg";
+        quota.reserve(owner(request),"alignment",id,Map.of(key,(long)frame.length));
         boolean[] written={false};
+        boolean[] writeSucceeded={false};
         try {
             return tx.execute(status -> {
                 var scene=tracking.scene(job,owner(request),body.sceneVersion(),true);expire(job);
@@ -108,33 +133,44 @@ public class AlignmentController {
                 else if(db.queryForObject("SELECT count(*) FROM room_tracking_cameras WHERE job_id=?",Long.class,job)>=16)
                     throw new IllegalArgumentException("A room can have at most 16 tracking cameras.");
                 written[0]=true;storage.writeJpeg(key,frame);
+                writeSucceeded[0]=true;
                 db.update("INSERT INTO room_camera_alignments(id,job_id,camera_id,camera_revision,name,scene_version,image_width,image_height,frame_key,manifest_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
                         id,job,body.cameraId(),revision,body.name().trim(),body.sceneVersion(),body.imageWidth(),body.imageHeight(),key,scene.manifestKey());
                 return view(alignment(job,id,false));
             });
         } catch(RuntimeException e) {
-            if(written[0])try { storage.delete(key); } catch(RuntimeException ignored) { LoggerFactory.getLogger(AlignmentController.class).warn("Unpublished camera alignment frame cleanup failed for {}",id); }
+            // Once a write or publication is attempted, retain the object and
+            // charge on uncertain outcomes, including a lost commit acknowledgement.
+            if(!written[0])try {
+                if(absent(key))quota.releaseVerifiedAbsent(owner(request),key);
+            } catch(RuntimeException ignored) { LoggerFactory.getLogger(AlignmentController.class).warn("Unused alignment allocation will be reconciled for {}",id); }
             throw e;
+        } finally {
+            // The S3 result is known even when the resource commit acknowledgement
+            // is uncertain. Confirm outside its locks without releasing capacity.
+            if(writeSucceeded[0])try { quota.confirm(owner(request),key,frame.length); }
+            catch(RuntimeException error) { LoggerFactory.getLogger(AlignmentController.class).warn("Frame byte confirmation will be reconciled for {}",id); }
+            cleanupFrames(job);
         }
     }
     @GetMapping("/{id}")
     public Map<String,Object> status(@PathVariable UUID job,@PathVariable UUID id,HttpServletRequest request) {
-        ownedJob(job,owner(request),false);expire(job);var row=alignment(job,id,false);
-        if(Set.of("FAILED","CANCELLED","APPLIED").contains(row.get("state")))deleteFrame(row);
-        return view(row);
+        ownedJob(job,owner(request),false);expire(job);cleanupFrames(job);
+        return view(alignment(job,id,false));
     }
     @PostMapping("/{id}/cancel")
     public Map<String,Object> cancel(@PathVariable UUID job,@PathVariable UUID id,HttpServletRequest request) {
-        return tx.execute(status -> {
+        var result=tx.execute(status -> {
             ownedJob(job,owner(request),true);var row=alignment(job,id,true);
             if(Set.of("QUEUED","RUNNING","READY").contains(row.get("state")))db.update("UPDATE room_camera_alignments SET state='CANCELLED',stage='cancelled',error=NULL,result=NULL,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=? AND job_id=? AND state IN ('QUEUED','RUNNING','READY')",id,job);
-            var changed=alignment(job,id,false);deleteFrame(changed);return view(changed);
+            return view(alignment(job,id,false));
         });
+        cleanupFrames(job);return result;
     }
     @PostMapping("/{id}/apply")
     public Map<String,Object> apply(@PathVariable UUID job,@PathVariable UUID id,HttpServletRequest request) {
-        ownedJob(job,owner(request),false);expire(job);
-        return tx.execute(status -> {
+        ownedJob(job,owner(request),false);expire(job);cleanupFrames(job);
+        var applied=tx.execute(status -> {
             ownedJob(job,owner(request),true);var row=alignment(job,id,true);
             int version=((Number)row.get("scene_version")).intValue();var scene=tracking.scene(job,owner(request),version,false);
             if("APPLIED".equals(row.get("state")))return tracking.view(tracking.camera(job,(UUID)row.get("applied_camera_id"),false));
@@ -158,7 +194,8 @@ public class AlignmentController {
             } else db.update("UPDATE room_tracking_cameras SET name=?,scene_version=?,revision=?,image_width=?,image_height=?,points=?::jsonb,homography=?::jsonb,fit_error_meters=?,geometry=?::jsonb,active_stream=NULL,last_sequence=-1,last_captured_at=NULL,snapshot='[]',snapshot_at=NULL,updated_at=now() WHERE id=? AND job_id=?",
                     row.get("name"),version,revision,width,height,encode(fitted.points()),encode(fitted.homography()),fitted.fitErrorMeters(),encode(fitted.geometry()),camera,job);
             db.update("UPDATE room_camera_alignments SET state='APPLIED',stage='applied',applied_camera_id=?,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=? AND job_id=?",camera,id,job);
-            deleteFrame(row);return tracking.view(tracking.camera(job,camera,false));
+            return tracking.view(tracking.camera(job,camera,false));
         });
+        cleanupFrames(job);return applied;
     }
 }

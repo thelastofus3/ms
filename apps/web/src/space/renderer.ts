@@ -6,6 +6,23 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import type { Calibration, CalibrationTool, Point, RoomManifest } from "./types";
 import { calibrationFromManifest, floorFrame, metersPerUnit, point, previewTransform, vector } from "./calibration";
 import type { CameraCalibration, WorldPerson } from "./tracking/types";
+import { expireSession, sessionRevision } from "../session";
+import { GAIT_PHASE_PER_METRE, locomotionPose } from "../gaussian/rig";
+import { fetchRigPackage, RiggedAvatar, type RigPackage } from "../gaussian/riggedAvatar";
+import { PoseFollower, retargetBody } from "../gaussian/retarget";
+import type { BodyPose } from "./tracking/types";
+
+/** A mirrored body pose older than this falls back to the walk/idle animation. */
+const BODY_POSE_MAX_AGE_MS = 700;
+
+type PersonMarker = {
+  group: THREE.Group; target: THREE.Vector3; expiresAt: number; label: string; estimated: boolean; labelSprite: THREE.Sprite;
+  uncertaintyRing: THREE.Mesh; body: THREE.Mesh;
+  /** Photographic avatar replacing the capsule; heading/gait follow the marker's own smoothed motion. */
+  avatar?: RiggedAvatar; avatarPending?: boolean; heading: number; phase: number; speed: number; previous: THREE.Vector3;
+  /** Latest observed body (room axes) for mirroring the person's pose, and when it arrived. */
+  observedBody?: BodyPose; bodyAt: number; follower: PoseFollower;
+};
 
 let physics: Promise<void> | undefined;
 const initializePhysics = () => physics ??= RAPIER.init();
@@ -21,7 +38,10 @@ export class RoomRenderer {
   private people = new THREE.Group();
   private floorReferences = new THREE.Group();
   private trackingCameras = new THREE.Group();
-  private peopleMarkers = new Map<string, { group: THREE.Group; target: THREE.Vector3; expiresAt: number; label: string; estimated: boolean; labelSprite: THREE.Sprite; uncertaintyRing: THREE.Mesh }>();
+  private peopleMarkers = new Map<string, PersonMarker>();
+  private avatarPackage?: RigPackage;
+  private avatarUrl = "";
+  private avatarAbort = new AbortController();
   private spark: SparkRenderer;
   private controls: OrbitControls;
   private collision?: THREE.Group;
@@ -178,8 +198,11 @@ export class RoomRenderer {
     } else this.controls.update();
     const wallTime = Date.now();
     for (const [id, marker] of this.peopleMarkers) {
-      if (wallTime >= marker.expiresAt) { this.disposeMeshes(marker.group); this.people.remove(marker.group); this.peopleMarkers.delete(id); }
-      else marker.group.position.lerp(marker.target, 1 - Math.exp(-elapsed * 12));
+      if (wallTime >= marker.expiresAt) this.removeMarker(id);
+      else {
+        marker.group.position.lerp(marker.target, 1 - Math.exp(-elapsed * 12));
+        if (marker.avatar) this.animateAvatar(marker, elapsed);
+      }
     }
     this.renderer.render(this.scene, this.camera);
     this.frameTime = this.frameTime * 0.97 + elapsed * 1000 * 0.03;
@@ -199,26 +222,30 @@ export class RoomRenderer {
     this.root.matrix.copy(previewTransform(this.calibration, manifest)); this.root.matrixAutoUpdate = false;
     const signal = this.abort.signal;
     const bytes = async (asset: RoomManifest["assets"]["splats"]) => {
-      const response = await fetch(asset.url, { signal }); if (!response.ok) throw Error("Room asset could not be downloaded. Reopen the room to refresh its links.");
+      const requestedRevision = sessionRevision();
+      const response = await fetch(asset.url, { signal }); if (response.status === 401) expireSession(requestedRevision); if (!response.ok) throw Error("Room asset could not be downloaded. Reopen the room to refresh its links.");
       const buffer = await response.arrayBuffer();
       if (buffer.byteLength !== asset.bytes) throw Error("Room asset size does not match its package");
       const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))].map(v => v.toString(16).padStart(2, "0")).join("");
       if (sha !== asset.sha256) throw Error("Room asset checksum does not match");
       return buffer;
     };
-    const [splatBytes, collisionBytes] = await Promise.all([bytes(manifest.assets.splats), bytes(manifest.assets.collision)]);
+    const [splatBytes, collisionBytes] = await Promise.all([bytes(manifest.assets.splats), manifest.assets.collision ? bytes(manifest.assets.collision) : undefined]);
     if (this.disposed || generation !== this.generation) return;
     const mesh = new SplatMesh({ fileBytes: splatBytes, fileName: manifest.assets.splats.path, lod: true, extSplats: true, covSplats: true });
-    const gltf = await new GLTFLoader().parseAsync(collisionBytes, "");
-    try { await mesh.initialized; } catch (error) { mesh.dispose(); throw error; }
-    if (this.disposed || generation !== this.generation) { mesh.dispose(); this.disposeMeshes(gltf.scene); return; }
-    this.mesh = mesh; this.collision = gltf.scene;
-    this.collision.traverse(object => { if (object instanceof THREE.Mesh) { const old = object.material; (Array.isArray(old) ? old : [old]).forEach(m => m.dispose()); object.material = new THREE.MeshBasicMaterial({ color: 0x6edbd2, wireframe: true, transparent: true, opacity: 0.35, side: THREE.DoubleSide }); } });
-    this.collision.visible = false;
-    this.root.add(mesh, this.collision);
+    let collision: THREE.Group | undefined;
+    try { if (collisionBytes) collision = (await new GLTFLoader().parseAsync(collisionBytes, "")).scene; await mesh.initialized; }
+    catch (error) { mesh.dispose(); if (collision) this.disposeMeshes(collision); throw error; }
+    if (this.disposed || generation !== this.generation) { mesh.dispose(); if (collision) this.disposeMeshes(collision); return; }
+    this.mesh = mesh; this.collision = collision;
+    if (collision) {
+      collision.traverse(object => { if (object instanceof THREE.Mesh) { const old = object.material; (Array.isArray(old) ? old : [old]).forEach(m => m.dispose()); object.material = new THREE.MeshBasicMaterial({ color: 0x6edbd2, wireframe: true, transparent: true, opacity: 0.35, side: THREE.DoubleSide }); } });
+      collision.visible = false; this.root.add(collision);
+    }
+    this.root.add(mesh);
     this.scene.updateMatrixWorld(true);
     this.resetView();
-    this.onStatus?.(manifest.ready ? "Room ready. Inspect surfaces or start walking." : "Reconstruction loaded. Calibrate scale and review the floor before walking.");
+    this.onStatus?.(manifest.sourceType === "gaussian-ply" ? "Imported PLY ready. Drag to orbit, right-drag to pan and scroll to zoom." : manifest.ready ? "Room ready. Inspect surfaces or start walking." : "Reconstruction loaded. Calibrate scale and review the floor before walking.");
   }
   showCollision(show: boolean) { if (this.collision) this.collision.visible = show; }
   setTool(tool: CalibrationTool) { this.tool = tool; this.canvas.style.cursor = tool === "review" ? "grab" : "crosshair"; }
@@ -237,7 +264,7 @@ export class RoomRenderer {
       this.updateClipping();
     }
   }
-  private sceneBox() { return this.collision ? new THREE.Box3().setFromObject(this.collision) : new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3(5, 5, 5)); }
+  private sceneBox() { return this.collision ? new THREE.Box3().setFromObject(this.collision) : this.mesh ? this.mesh.getBoundingBox().clone().applyMatrix4(this.mesh.matrixWorld) : new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3(5, 5, 5)); }
   private updateClipping() {
     const extent = this.sceneBox().getSize(new THREE.Vector3()).length();
     this.camera.near = Math.max(0.0001, extent / 10000);
@@ -248,6 +275,12 @@ export class RoomRenderer {
     this.inspect();
     const damping = this.controls.enableDamping;
     this.controls.enableDamping = false; this.controls.update();
+    if (this.manifest.sourceType === "gaussian-ply") {
+      this.camera.position.setFromMatrixPosition(new THREE.Matrix4().fromArray(this.manifest.previewCamera)).applyMatrix4(this.root.matrix);
+      this.controls.target.copy(this.sceneBox().getCenter(new THREE.Vector3())); this.camera.up.set(0, 1, 0);
+      if (this.camera.position.distanceToSquared(this.controls.target) < 1e-10) this.camera.position.add(new THREE.Vector3(0, 1, 2));
+      this.controls.update(); this.updateClipping(); this.controls.enableDamping = damping; this.levelled = false; return;
+    }
     const capture = new THREE.Matrix4().fromArray(this.manifest.previewCamera);
     this.camera.position.setFromMatrixPosition(capture).applyMatrix4(this.root.matrix);
     const forward = new THREE.Vector3().setFromMatrixColumn(capture, 2).negate().transformDirection(this.root.matrix);
@@ -312,8 +345,10 @@ export class RoomRenderer {
         this.updateTrackingLabel(sprite, person.label, color);
         sprite.position.y = 1.95; sprite.renderOrder = 1001; group.add(sprite);
         group.position.copy(vector(person.position)); this.people.add(group);
-        marker = { group, target: vector(person.position), expiresAt: person.expiresAt, label: person.label, estimated, labelSprite: sprite, uncertaintyRing: uncertainty };
+        marker = { group, target: vector(person.position), expiresAt: person.expiresAt, label: person.label, estimated, labelSprite: sprite, uncertaintyRing: uncertainty,
+          body, heading: 0, phase: 0, speed: 0, previous: vector(person.position), bodyAt: 0, follower: new PoseFollower() };
         this.peopleMarkers.set(person.id, marker);
+        void this.attachAvatar(marker);
       }
       // Changing a confidence label must not discard the interpolated position.
       if (marker.label !== person.label || marker.estimated !== estimated) {
@@ -325,10 +360,66 @@ export class RoomRenderer {
       marker.uncertaintyRing.visible = estimated && Number.isFinite(uncertainty) && uncertainty > 0;
       if (marker.uncertaintyRing.visible) marker.uncertaintyRing.scale.setScalar(Math.min(1.5, uncertainty));
       marker.target.copy(vector(person.position)); marker.expiresAt = person.expiresAt;
+      if (person.body) { marker.observedBody = person.body; marker.bodyAt = Date.now(); }
     }
     for (const [id, marker] of this.peopleMarkers) if (!current.has(id)) {
-      this.disposeMeshes(marker.group); this.people.remove(marker.group); this.peopleMarkers.delete(id);
+      this.removeMarker(id);
     }
+  }
+  /** Shows tracked people as a rigged photographic avatar (`gaussian-rig` package URL) or, with null, as capsules. */
+  async setPeopleAvatar(baseUrl: string | null) {
+    if ((baseUrl ?? "") === this.avatarUrl) return;
+    this.avatarAbort.abort(); this.avatarAbort = new AbortController();
+    this.avatarUrl = baseUrl ?? ""; this.avatarPackage = undefined;
+    for (const marker of this.peopleMarkers.values()) this.dropAvatar(marker);
+    if (!baseUrl) return;
+    const signal = this.avatarAbort.signal;
+    const pkg = await fetchRigPackage(baseUrl, signal);
+    if (signal.aborted || this.disposed) return;
+    this.avatarPackage = pkg;
+    for (const marker of this.peopleMarkers.values()) void this.attachAvatar(marker);
+  }
+  private async attachAvatar(marker: PersonMarker) {
+    const pkg = this.avatarPackage;
+    if (!pkg || marker.avatar || marker.avatarPending) return;
+    marker.avatarPending = true;
+    try {
+      const avatar = await RiggedAvatar.create(pkg);
+      // The marker may have expired, or the chosen avatar changed, while the mesh was initialising.
+      if (this.disposed || pkg !== this.avatarPackage || ![...this.peopleMarkers.values()].includes(marker)) { avatar.dispose(); return; }
+      marker.avatar = avatar; marker.group.add(avatar.mesh); marker.body.visible = false;
+      marker.previous.copy(marker.group.position);
+      this.animateAvatar(marker, 0);
+    } finally { marker.avatarPending = false; }
+  }
+  private dropAvatar(marker: PersonMarker) {
+    if (!marker.avatar) return;
+    marker.group.remove(marker.avatar.mesh); marker.avatar.dispose(); marker.avatar = undefined; marker.body.visible = true;
+  }
+  private animateAvatar(marker: PersonMarker, elapsed: number) {
+    const avatar = marker.avatar!, position = marker.group.position;
+    const dx = position.x - marker.previous.x, dz = position.z - marker.previous.z, step = Math.hypot(dx, dz);
+    marker.previous.copy(position);
+    if (elapsed > 0) marker.speed += (step / elapsed - marker.speed) * (1 - Math.exp(-elapsed * 4));
+    marker.phase += step * GAIT_PHASE_PER_METRE;
+    const base = locomotionPose(avatar.rig.data, marker.phase, marker.speed / 0.5);
+    // Mirror the person's observed body where it is visible; unseen joints keep the walk/idle animation.
+    const mirrored = marker.observedBody && Date.now() - marker.bodyAt < BODY_POSE_MAX_AGE_MS ? retargetBody(avatar.rig.data, marker.observedBody) : undefined;
+    if (!mirrored && step > 0.002) {
+      // Without a body pose, face the walking direction; keep the last heading while standing (the avatar faces +z).
+      const target = Math.atan2(dx, dz), turn = Math.atan2(Math.sin(target - marker.heading), Math.cos(target - marker.heading));
+      marker.heading += turn * (1 - Math.exp(-elapsed * 8));
+    }
+    const target = mirrored ? base.map((angles, i) => mirrored.angles[i] ?? angles) : base;
+    const smoothed = marker.follower.update(target, mirrored ? mirrored.yaw : marker.heading, elapsed);
+    if (mirrored) marker.heading = smoothed.yaw;
+    avatar.mesh.rotation.y = smoothed.yaw;
+    avatar.pose(smoothed.angles);
+  }
+  private removeMarker(id: string) {
+    const marker = this.peopleMarkers.get(id);
+    if (!marker) return;
+    this.dropAvatar(marker); this.disposeMeshes(marker.group); this.people.remove(marker.group); this.peopleMarkers.delete(id);
   }
   private updateTrackingLabel(sprite: THREE.Sprite, label: string, color: THREE.Color, height = 0.24) {
     const canvas = document.createElement("canvas"), context = canvas.getContext("2d")!;
@@ -581,8 +672,9 @@ export class RoomRenderer {
       (Array.isArray(object.material) ? object.material : [object.material]).forEach(m => { if (m instanceof THREE.SpriteMaterial) m.map?.dispose(); m.dispose(); });
     }
   }); }
-  private clear() { this.disposeMeshes(this.trackingCameras); this.trackingCameras.clear(); this.disposeMeshes(this.floorReferences); this.floorReferences.clear(); this.disposeMeshes(this.people); this.people.clear(); this.peopleMarkers.clear(); this.mesh?.dispose(); this.mesh = undefined; if (this.collision) this.disposeMeshes(this.collision); this.collision = undefined; this.root.clear(); this.disposeMeshes(this.annotations); this.annotations.clear(); this.root.add(this.annotations); }
+  private clear() { this.disposeMeshes(this.trackingCameras); this.trackingCameras.clear(); this.disposeMeshes(this.floorReferences); this.floorReferences.clear(); for (const id of [...this.peopleMarkers.keys()]) this.removeMarker(id); this.disposeMeshes(this.people); this.people.clear(); this.mesh?.dispose(); this.mesh = undefined; if (this.collision) this.disposeMeshes(this.collision); this.collision = undefined; this.root.clear(); this.disposeMeshes(this.annotations); this.annotations.clear(); this.root.add(this.annotations); }
   dispose() {
+    this.avatarAbort.abort();
     if (this.disposed) return;
     this.disposed = true; ++this.generation; this.abort.abort(); this.inspect(); this.stopRendering(); this.observer.disconnect(); this.controls.removeEventListener("start", this.orbitStart); this.controls.removeEventListener("end", this.orbitEnd); this.controls.dispose();
     this.canvas.removeEventListener("pointerdown", this.pointerDown); this.canvas.removeEventListener("pointerup", this.pointerUp); this.canvas.removeEventListener("click", this.lock);

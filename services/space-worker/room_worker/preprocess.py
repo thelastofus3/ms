@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 from .commands import run, inspect_video
+from .input_identity import validate_media, verify_download
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
 
@@ -92,6 +93,7 @@ def select_video_frames(candidates, budget, lease=None):
 
 
 def prepare(media, storage, work: Path, profile, lease):
+    validate_media(media)
     inputs = work / "input"
     inputs.mkdir()
     files = []
@@ -108,8 +110,7 @@ def prepare(media, storage, work: Path, profile, lease):
         lease.check()
         path = inputs / f"{index:05d}.media"
         storage.download_file(storage.bucket, item["key"], str(path), Callback=download_progress)
-        if path.stat().st_size != item["size"]:
-            raise ValueError("Uploaded file size changed")
+        verify_download(path, item, lease)
         files.append(path)
     video = media[0]["contentType"].startswith("video/")
     budget = profile["frames"]

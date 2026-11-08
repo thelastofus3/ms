@@ -25,15 +25,15 @@ test("approval follows the successfully displayed job, not a demo", async ({
     route.fulfill({ body: model, contentType: "model/gltf-binary" }),
   );
   await page.goto("/?mode=mesh");
-  await page.getByLabel("Токен доступа").fill("test-only");
-  await page.getByRole("button", { name: "Создать аватара →" }).click();
-  await expect(page.getByText("Модель загружена")).toBeVisible();
+  await page.getByLabel("Access token").fill("test-only");
+  await page.getByRole("button", { name: "Create avatar →" }).click();
+  await expect(page.getByText("Model loaded")).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Подтвердить внешность" }),
+    page.getByRole("button", { name: "Confirm appearance" }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Открыть демо" }).click();
+  await page.getByRole("button", { name: "Open demo" }).click();
   await expect(
-    page.getByRole("button", { name: "Подтвердить внешность" }),
+    page.getByRole("button", { name: "Confirm appearance" }),
   ).toBeDisabled();
 });
 
@@ -159,14 +159,14 @@ test("real MPFB package loads in the browser and controls switch", async ({
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/?mode=mesh");
-  await page.getByRole("button", { name: "Открыть демо" }).click();
-  await expect(page.getByText("Модель загружена")).toBeVisible();
-  await expect(page.getByText(/19 костей/)).toBeVisible();
-  await page.getByRole("button", { name: "Тест позы" }).click();
-  await expect(page.getByText("Источник: тестовая поза")).toBeVisible();
+  await page.getByRole("button", { name: "Open demo" }).click();
+  await expect(page.getByText("Model loaded")).toBeVisible();
+  await expect(page.getByText(/19 bones/)).toBeVisible();
+  await page.getByRole("button", { name: "Pose test" }).click();
+  await expect(page.getByText("Source: test pose")).toBeVisible();
   await page.screenshot({ path: "../../.runtime/avatar-browser.png" });
-  await page.getByRole("button", { name: "Клавиатура" }).click();
-  await expect(page.getByText("Источник: клавиатура")).toBeVisible();
+  await page.getByRole("button", { name: "Keyboard" }).click();
+  await expect(page.getByText("Source: keyboard")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -176,28 +176,28 @@ test("operator creates an avatar through the real API and worker", async ({
   test.skip(!process.env.AVATAR_E2E_TOKEN, "Requires running API and worker");
   test.setTimeout(90000);
   await page.goto("/?mode=mesh");
-  await page.getByLabel("Токен доступа").fill(process.env.AVATAR_E2E_TOKEN!);
-  await page.getByLabel("Имя", { exact: true }).fill("Browser integration");
-  await page.getByRole("button", { name: "Создать аватара →" }).click();
-  await expect(page.getByText("Модель загружена")).toBeVisible({
+  await page.getByLabel("Access token").fill(process.env.AVATAR_E2E_TOKEN!);
+  await page.getByLabel("Name", { exact: true }).fill("Browser integration");
+  await page.getByRole("button", { name: "Create avatar →" }).click();
+  await expect(page.getByText("Model loaded")).toBeVisible({
     timeout: 60000,
   });
-  await page.getByRole("button", { name: "Открыть демо" }).click();
+  await page.getByRole("button", { name: "Open demo" }).click();
   await expect(
-    page.getByRole("button", { name: "Подтвердить внешность" }),
+    page.getByRole("button", { name: "Confirm appearance" }),
   ).toBeDisabled();
   await page
-    .getByRole("button", { name: "Показать результат задания" })
+    .getByRole("button", { name: "Show job result" })
     .click();
   await expect(
-    page.getByRole("button", { name: "Подтвердить внешность" }),
+    page.getByRole("button", { name: "Confirm appearance" }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Подтвердить внешность" }).click();
+  await page.getByRole("button", { name: "Confirm appearance" }).click();
   await expect(
-    page.getByRole("button", { name: "Внешность подтверждена" }),
+    page.getByRole("button", { name: "Appearance confirmed" }),
   ).toBeDisabled();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Скачать пакет" }).click();
+  await page.getByRole("button", { name: "Download package" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^avatar-.*\.zip$/);
   await page.evaluate(() => window.scrollTo(0, 0));

@@ -7,8 +7,9 @@ export type Navigation = {
 };
 export type RoomManifest = {
   schemaVersion: 1; sceneId: string; version: number; ready: boolean;
+  sourceType?: "gaussian-ply"; bounds?: { min: Point; max: Point };
   units: "meters" | "uncalibrated"; axes: "right-handed-y-up";
-  assets: { splats: Asset; collision: Asset; source?: Asset; report?: Asset };
+  assets: { splats: Asset; collision?: Asset; source?: Asset; report?: Asset };
   worldFromReconstruction: number[]; previewCamera: number[];
   collisionReviewed: boolean; navigation?: Navigation;
   calibration?: Calibration;
@@ -16,6 +17,7 @@ export type RoomManifest = {
 };
 export type Job = {
   id: string; name: string; state: string; stage: string; progress: number;
+  kind?: "capture" | "splat";
   profile: string; error: string | null; cancel_requested: boolean;
   manifestUrl?: string; version?: number; diagnostics: Record<string, unknown>;
 };
@@ -41,10 +43,12 @@ export function parseManifest(value: unknown): RoomManifest {
   if (m.schemaVersion !== 1 || m.axes !== "right-handed-y-up" || !["meters", "uncalibrated"].includes(m.units) || !vector(m.worldFromReconstruction, 16) || !vector(m.previewCamera, 16)) throw Error("Unsupported room coordinates or package version");
   for (const name of ["splats", "collision"] as const) {
     const a = m.assets?.[name];
+    if (name === "collision" && !a && m.sourceType === "gaussian-ply") continue;
     if (!a || !/^[a-f0-9]{64}$/.test(a.sha256) || !numeric(a.bytes) || a.bytes < 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(a.path)) throw Error("Invalid room asset");
     const url = new URL(a.url, location.href);
     if (!["https:", "http:"].includes(url.protocol)) throw Error("Invalid asset URL");
   }
+  if (m.sourceType === "gaussian-ply" && (m.ready !== false || m.collisionReviewed !== false || m.units !== "uncalibrated" || m.navigation)) throw Error("Imported PLY scenes support uncalibrated orbit viewing only");
   const t = m.worldFromReconstruction;
   const lengths = [0, 4, 8].map(i => Math.hypot(t[i], t[i + 1], t[i + 2]));
   if (lengths[0] <= 0 || lengths.some(v => Math.abs(v / lengths[0] - 1) > 1e-5) || t[3] !== 0 || t[7] !== 0 || t[11] !== 0 || t[15] !== 1) throw Error("Room transform must have uniform scale");

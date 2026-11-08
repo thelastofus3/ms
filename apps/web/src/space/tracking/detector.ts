@@ -9,7 +9,7 @@ export class CameraDetector {
   private rejectStart: ((reason: Error) => void) | undefined;
   private inFlight = false;
   private sequence = 0;
-  async start(video: HTMLVideoElement, onResult: (landmarks: PoseLandmark[][], timestamp: number, detections?: ImageDetection[]) => void, onError: (message: string) => void, onHealth?: (health: DetectorHealth) => void): Promise<void> {
+  async start(video: HTMLVideoElement, onResult: (landmarks: PoseLandmark[][], timestamp: number, detections?: ImageDetection[], worldLandmarks?: PoseLandmark[][]) => void, onError: (message: string) => void, onHealth?: (health: DetectorHealth) => void): Promise<void> {
     this.stop();
     if (typeof Worker === "undefined" || typeof OffscreenCanvas === "undefined" || typeof createImageBitmap !== "function") throw Error("Use a current browser with worker camera processing and OffscreenCanvas support.");
     const generation = this.generation, worker = new Worker(new URL("./pose.worker.ts", import.meta.url), { type: "module" });
@@ -76,12 +76,12 @@ export class CameraDetector {
         if (!active()) return;
         // Never publish delayed physical observations as current positions.
         if (!stale) {
-          try { onResult(message.landmarks, message.timestamp, message.detections); }
+          try { onResult(message.landmarks, message.timestamp, message.detections, message.worldLandmarks); }
           catch (reason) { fail(reason instanceof Error ? reason.message : "Unable to process the camera positions."); return; }
         }
         schedule(Math.max(0, 125 - inferenceMs));
       };
-      const init: DetectorInput = { type: "init", wasmRoot: new URL("/tracking/wasm", location.origin).href, modelPath: new URL("/tracking/pose_landmarker_lite.task", location.origin).href, personModelPath: new URL("/tracking/efficientdet_lite0.tflite", location.origin).href };
+      const init: DetectorInput = { type: "init", wasmRoot: new URL("/tracking/wasm", location.origin).href, modelPath: new URL("/tracking/pose_landmarker_full.task", location.origin).href, personModelPath: new URL("/tracking/efficientdet_lite0.tflite", location.origin).href };
       worker.postMessage(init);
     });
   }

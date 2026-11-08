@@ -10,12 +10,16 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class ApiErrors {
+    @ExceptionHandler(RoomQuotaService.QuotaExceeded.class)
+    ResponseEntity<?> quota(RoomQuotaService.QuotaExceeded e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("code","QUOTA_EXCEEDED","dimension",e.dimension,"message",e.getReason()));
+    }
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<?> invalid(IllegalArgumentException e) { return ResponseEntity.badRequest().body(Map.of("message",e.getMessage())); }
     @ExceptionHandler({MethodArgumentNotValidException.class,HttpMessageNotReadableException.class})
     ResponseEntity<?> invalidBody(Exception e) { return ResponseEntity.badRequest().body(Map.of("message","Invalid request fields")); }
     @ExceptionHandler(ResponseStatusException.class)
-    ResponseEntity<?> status(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).body(Map.of("message",e.getReason()==null ? "Request failed":e.getReason())); }
+    ResponseEntity<?> status(ResponseStatusException e) { return ResponseEntity.status(e.getStatusCode()).headers(e.getHeaders()).body(Map.of("message",e.getReason()==null ? "Request failed":e.getReason())); }
     @ExceptionHandler(Exception.class)
     ResponseEntity<?> unavailable(Exception e) {
         LoggerFactory.getLogger(ApiErrors.class).error("Room request failed",e);

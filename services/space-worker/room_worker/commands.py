@@ -61,6 +61,6 @@ def inspect_video(path):
         raise ValueError("Upload a video with one video stream")
     duration = float(metadata.get("format", {}).get("duration", 0))
     stream = streams[0]
-    if not 3 <= duration <= 300 or stream["width"] * stream["height"] > 40_000_000:
-        raise ValueError("Video must be 3–300 seconds and no more than 40 megapixels per frame")
+    if not 3 <= duration <= 1200 or stream["width"] * stream["height"] > 40_000_000:
+        raise ValueError("Video must be 3–1200 seconds and no more than 40 megapixels per frame")
     return duration

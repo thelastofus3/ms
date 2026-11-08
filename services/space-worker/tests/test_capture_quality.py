@@ -1,6 +1,8 @@
 import tempfile
 import shutil
 import unittest
+import hashlib
+import uuid
 from pathlib import Path
 
 import cv2
@@ -49,15 +51,19 @@ class CaptureQualityTests(unittest.TestCase):
             source = root / "sources"
             source.mkdir()
             media = []
+            sources = {}
             for index in range(12):
                 path = source / f"{index}.png"
                 Image.new("RGB", (320, 320), (index, 128, 128)).save(path)
-                media.append({"key": str(path), "size": path.stat().st_size, "contentType": "image/png"})
+                key = f"sealed-inputs/{uuid.uuid4()}/{uuid.uuid4()}"
+                sources[key] = path
+                media.append({"key": key, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                              "size": path.stat().st_size, "contentType": "image/png"})
             class Storage:
                 bucket = "test"
                 def download_file(self, bucket, key, target, Callback):
-                    shutil.copyfile(key, target)
-                    Callback(Path(key).stat().st_size)
+                    shutil.copyfile(sources[key], target)
+                    Callback(sources[key].stat().st_size)
             class Lease:
                 def check(self): pass
                 def progress(self, *args, **kwargs): pass
