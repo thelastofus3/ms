@@ -1,0 +1,115 @@
+# Rendered by deploy/lhc/lhc.sh (placeholders @...@). Same routing as apps/web/nginx.conf, without Docker DNS.
+worker_processes 2;
+pid @RUN@/nginx/nginx.pid;
+error_log @RUN@/logs/nginx.log warn;
+
+events { worker_connections 1024; }
+
+http {
+    access_log @RUN@/logs/nginx-access.log;
+    client_body_temp_path @RUN@/nginx/temp/body;
+    proxy_temp_path @RUN@/nginx/temp/proxy;
+    fastcgi_temp_path @RUN@/nginx/temp/fastcgi;
+    uwsgi_temp_path @RUN@/nginx/temp/uwsgi;
+    scgi_temp_path @RUN@/nginx/temp/scgi;
+
+    types {
+        text/html html;
+        text/css css;
+        application/javascript js mjs;
+        application/json json map;
+        application/wasm wasm;
+        image/svg+xml svg;
+        image/png png;
+        image/jpeg jpg jpeg;
+        image/webp webp;
+        model/gltf-binary glb;
+        font/woff2 woff2;
+        application/zip zip;
+    }
+    default_type application/octet-stream;
+    sendfile on;
+    server_tokens off;
+
+    server {
+        listen 127.0.0.1:@WEB_PORT@;
+        server_name _;
+        root @DIST@;
+        index index.html;
+        client_max_body_size 128m;
+
+        # The LHC platform checks /health/ (it used to be served by the Django core).
+        location = /health/ {
+            default_type application/json;
+            return 200 '{"status": "ok", "tenant": "student2", "app": "masterproject"}';
+        }
+        location = /healthz { access_log off; return 200 'ok'; }
+
+        # Presigned S3 URLs use PUBLIC_URL as endpoint with path-style bucket "rooms".
+        # Host must stay unchanged, otherwise the S3 signature does not match.
+        location /rooms/ {
+            client_max_body_size 1100m;
+            proxy_pass http://127.0.0.1:@S3_PORT@;
+            proxy_set_header Host $http_host;
+            proxy_http_version 1.1;
+            proxy_request_buffering off;
+            proxy_buffering off;
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }
+
+        location ~ ^/v1/rooms/uploads/[0-9A-Fa-f-]+/files/[0-9]+(?:/parts/[0-9]+)?$ {
+            client_max_body_size 16m;
+            client_body_timeout 30s;
+            proxy_pass http://127.0.0.1:@API_PORT@;
+            proxy_request_buffering off;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Room-Client-IP $remote_addr;
+            proxy_set_header Forwarded "";
+            proxy_read_timeout 120s;
+            proxy_send_timeout 60s;
+        }
+        location /v1/rooms {
+            proxy_pass http://127.0.0.1:@API_PORT@;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Room-Client-IP $remote_addr;
+            proxy_set_header Forwarded "";
+            proxy_read_timeout 120s;
+        }
+        # Walk-around videos for avatars: up to 1 GB, streamed to the photo service without buffering.
+        location = /v1/photo-captures/video {
+            client_max_body_size 1100m;
+            client_body_timeout 120s;
+            proxy_pass http://127.0.0.1:@PHOTO_PORT@;
+            proxy_request_buffering off;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Room-Client-IP "";
+            proxy_set_header Forwarded "";
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }
+        location /v1/photo-captures {
+            proxy_pass http://127.0.0.1:@PHOTO_PORT@;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-Room-Client-IP "";
+            proxy_set_header Forwarded "";
+            proxy_read_timeout 120s;
+        }
+        location /v1/ { return 404; }
+
+        # Hashed bundles never change; a missing one must be a 404, not index.html.
+        location /assets/ { try_files $uri =404; add_header Cache-Control "public, max-age=31536000, immutable"; }
+        location /tracking/ { try_files $uri =404; add_header Cache-Control "no-cache"; }
+        location /demo/ { try_files $uri =404; }
+        location = /index.html { add_header Cache-Control "no-cache"; }
+        location / { try_files $uri $uri/ /index.html; }
+    }
+}
