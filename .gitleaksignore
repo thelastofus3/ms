@@ -1,0 +1,8 @@
+# Reviewed false positives (gitleaks 8.30.1, 2026-11-09).
+# All are fake test JWTs: header {"alg":"HS256"}, payload {"sub":"alice"|"test-account"},
+# signature is the literal word "signature" (c2lnbmF0dXJl) - not valid for any server.
+d8c17fc8d3072ae86992c1455f97a8bcd15ffa9d:apps/web/tests/auth-fixture.ts:jwt:5
+d8c17fc8d3072ae86992c1455f97a8bcd15ffa9d:services/avatar/tests/photo_browser_server.py:jwt:14
+d8c17fc8d3072ae86992c1455f97a8bcd15ffa9d:services/avatar/tests/test_photo_auth.py:jwt:10
+d8c17fc8d3072ae86992c1455f97a8bcd15ffa9d:services/avatar/tests/test_photo_api.py:jwt:13
+d8c17fc8d3072ae86992c1455f97a8bcd15ffa9d:services/avatar/tests/test_photo_api.py:jwt:15
