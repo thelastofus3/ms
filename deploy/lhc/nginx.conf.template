@@ -45,6 +45,9 @@ http {
         }
         location = /healthz { access_log off; return 200 'ok'; }
 
+        # Self-registration switch (ALLOW_REGISTRATION in ms.env); closed by default.
+        include @RUN@/nginx/registration.conf;
+
         # Presigned S3 URLs use PUBLIC_URL as endpoint with path-style bucket "rooms".
         # Host must stay unchanged, otherwise the S3 signature does not match.
         location /rooms/ {

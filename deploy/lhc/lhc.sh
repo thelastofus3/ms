@@ -73,7 +73,9 @@ PHOTO_PORT=28002
 S3_PORT=29000
 S3_CONSOLE_PORT=29001
 PG_PORT=25433
-API_HEAP=1g
+API_HEAP=512m
+# Public self-registration (new SPLAT_UPLOADER accounts). Keep "no" on a public server; the admin creates accounts.
+ALLOW_REGISTRATION=no
 # Address users open in the browser. Once student2.mmclab.eu points at WEB_PORT, set:
 # PUBLIC_URL=https://student2.mmclab.eu
 PUBLIC_URL=http://localhost:28080
@@ -95,6 +97,7 @@ EOF
 load_env() {
   [ -f "$ENVFILE" ] || die "Missing $ENVFILE - run: bash $SELF setup"
   set -a; . "$ENVFILE"; set +a
+  ALLOW_REGISTRATION="${ALLOW_REGISTRATION:-no}"   # closed unless explicitly enabled
   export ROOM_BROWSER_ORIGINS="$PUBLIC_URL,http://localhost:$WEB_PORT,http://127.0.0.1:$WEB_PORT"
   export ROOM_S3_BUCKET=rooms
 }
@@ -170,7 +173,8 @@ start_api() {
     ROOM_DATABASE_URL="jdbc:postgresql://127.0.0.1:$PG_PORT/rooms" ROOM_DATABASE_USER=rooms \
     ROOM_AUTH_TRUSTED_PROXIES=127.0.0.1 \
     ROOM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" ROOM_S3_PUBLIC_ENDPOINT="$PUBLIC_URL" \
-    java -Xms256m -Xmx"$API_HEAP" -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir="$TMPDIR" -jar "$JAR"
+    java -Xms128m -Xmx"$API_HEAP" -XX:MaxMetaspaceSize=256m -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError \
+      -Djava.io.tmpdir="$TMPDIR" -jar "$JAR"
   wait_http room-api "http://127.0.0.1:$API_PORT/actuator/health" UP
 }
 
@@ -190,6 +194,16 @@ start_nginx() {
   sed -e "s|@RUN@|$RUN|g" -e "s|@DIST@|$DIST|g" -e "s|@WEB_PORT@|$WEB_PORT|g" \
       -e "s|@API_PORT@|$API_PORT|g" -e "s|@PHOTO_PORT@|$PHOTO_PORT|g" -e "s|@S3_PORT@|$S3_PORT|g" \
       "$REPO/deploy/lhc/nginx.conf.template" >"$RUN/nginx/nginx.conf"
+  if [ "$ALLOW_REGISTRATION" = yes ]; then
+    : >"$RUN/nginx/registration.conf"
+  else
+    cat >"$RUN/nginx/registration.conf" <<'EOF'
+location = /v1/rooms/auth/register {
+    default_type application/json;
+    return 403 '{"message": "Registration is disabled. Ask the administrator for an account."}';
+}
+EOF
+  fi
   nginx_cmd -t -q || die "nginx config test failed"
   if running nginx; then nginx_cmd -s reload; log "nginx reloaded"; return; fi
   need_port nginx "$WEB_PORT"
@@ -232,6 +246,7 @@ cmd_status() {
     if running "$s"; then printf '  %-14s \033[32mrunning\033[0m\n' "$s"; else printf '  %-14s \033[31mstopped\033[0m\n' "$s"; fi
   done
   printf '  %-14s %s\n' "web health" "$(curl -fsS --max-time 3 "http://127.0.0.1:$WEB_PORT/health/" 2>&1 || true)"
+  printf '  %-14s %s\n' "registration" "$([ "$ALLOW_REGISTRATION" = yes ] && echo open || echo closed)"
   echo
   echo "  Test from your PC:  ssh -N -L $WEB_PORT:127.0.0.1:$WEB_PORT lhc-student2   then open http://localhost:$WEB_PORT"
   echo "  Public address:     $PUBLIC_URL"
