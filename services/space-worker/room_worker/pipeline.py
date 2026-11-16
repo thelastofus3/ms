@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import time
@@ -32,6 +33,15 @@ def reconstruct(job, storage, work: Path, lease):
                 previous.append((data, marker.parent))
         except (OSError, ValueError, KeyError):
             pass
+    def reuse(source, target):
+        # Depth maps are write-once and ~50 MB per frame: link them, a copy doubled 45 GB per retry and filled the disk.
+        if Path(source).parent.parent.name == "stereo":
+            try:
+                os.link(source, target)
+                return target
+            except OSError:
+                pass
+        return shutil.copy2(source, target)
     def recover(stage, directory):
         for checkpoint, root in reversed(previous):
             if checkpoint.get("stage") not in (["poses", "geometry", "export"] if stage == "poses" else ["geometry", "export"]):
@@ -40,7 +50,7 @@ def reconstruct(job, storage, work: Path, lease):
             files = checkpoint.get("files", {}).get(directory, {})
             if files and all((candidate / name).is_file() and digest(candidate / name) == sha for name, sha in files.items()):
                 lease.check()
-                shutil.copytree(candidate, work / directory)
+                shutil.copytree(candidate, work / directory, copy_function=reuse)
                 return checkpoint["report"]
         return None
     def checkpoint(stage, directories):
@@ -115,6 +125,10 @@ def reconstruct(job, storage, work: Path, lease):
                     stale = max(image.size) > depth_size
             if stale:
                 shutil.rmtree(dense)
+            # A map being written when the worker died is empty; COLMAP would skip it as finished.
+            for path in [] if stale else [p for folder in ("depth_maps", "normal_maps") for p in (dense/"stereo"/folder).glob("*.bin")]:
+                if not path.stat().st_size:
+                    path.unlink()
             # Reuse only immutable checkpoints with matching capture/tool fingerprints.
             for name in [] if stale else invalidate:
                 for folder in ("depth_maps", "normal_maps", "consistency_graphs"):
@@ -125,7 +139,9 @@ def reconstruct(job, storage, work: Path, lease):
         checkpoint("poses", ["dataset", "dense"])
         lease.progress("Depth estimation", "Starting this step", force=True)
         run(["colmap", "patch_match_stereo", "--workspace_path", dense, "--PatchMatchStereo.geom_consistency", "true",
-             "--PatchMatchStereo.cache_size", "2", "--PatchMatchStereo.max_image_size", depth_size], work, lease, 28800)
+             "--PatchMatchStereo.cache_size", "2", "--PatchMatchStereo.max_image_size", depth_size], work, lease,
+            # Two passes per frame; measured 16 s + 27 s per 720p frame on an RTX 2060, so 891 frames outran a fixed 8 h limit.
+            max(28800, 90 * report["poses"]["registeredFrames"]))
         report["geometry"] = build_collision(dense, output, report["poses"], lease)
     schedule = training_schedule(profile, report["poses"]["registeredFrames"])
     report["trainingSchedule"] = schedule
@@ -159,7 +175,7 @@ def reconstruct(job, storage, work: Path, lease):
              "--pipeline.model.use-scale-regularization", "True", "colmap",
              "--downscale-factor", "1", "--orientation-method", "none", "--center-method", "none",
              "--auto-scale-poses", "False", "--assume-colmap-world-coordinate-convention", "False", "--scale-factor", "1.0",
-             "--load-3D-points", "True"], work, lease, 28800)
+             "--load-3D-points", "True"], work, lease, max(28800, remaining_steps))
         configs = sorted(training.rglob("config.yml"))
     else:
         configs = [latest.parent.parent/"config.yml"]

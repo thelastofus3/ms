@@ -60,6 +60,7 @@ export async function jobs(signal?: AbortSignal) {
 }
 export const job = (id: string) => request<Job>(`${base}/jobs/${id}`);
 export const cancel = (id: string) => request<Job>(`${base}/jobs/${id}/cancel`, {});
+export const resume = (id: string) => request<Job>(`${base}/jobs/${id}/resume`, {});
 export const reconstructAgain = (id: string, idempotencyKey: string) => request<Job>(`${base}/jobs/${id}/reconstruct`, { idempotencyKey });
 export const calibrate = (id: string, calibration: Calibration) => request<Job>(`${base}/jobs/${id}/calibration`, calibration);
 export async function manifest(url: string) { return parseManifest(await request(url)); }

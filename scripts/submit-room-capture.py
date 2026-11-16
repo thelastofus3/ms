@@ -1,4 +1,4 @@
-"""Upload one room video (or 12-500 photos) through the room API and queue a reconstruction job.
+"""Upload room video clips (1-24 of the same room) or 12-500 photos through the room API and queue a reconstruction job.
 
 Credentials come from ROOM_ADMIN_USERNAME / ROOM_ADMIN_PASSWORD (environment or the project .env).
 Usage: python scripts/submit-room-capture.py --name "Room" [--profile quality] FILE [FILE ...]

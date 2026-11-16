@@ -22,7 +22,8 @@ def run(args, work: Path, lease, timeout=7200):
             while process.poll() is None:
                 lease.check()
                 if time.monotonic() - started > timeout:
-                    raise RuntimeError(f"{Path(str(args[0])).name} exceeded its stage time limit")
+                    raise RuntimeError(f"This step ran longer than its {timeout // 60} minute limit on this computer. "
+                                       "Finished work is saved: press Continue reconstruction, or use fewer or shorter clips.")
                 if tick % 15 == 0:
                     size = sum(p.stat().st_size for p in work.rglob("*") if p.is_file())
                     if size > MAX_SCRATCH_BYTES or path.stat().st_size > 64 * 1024**2:
@@ -34,7 +35,9 @@ def run(args, work: Path, lease, timeout=7200):
                     error_log.seek(max(0, path.stat().st_size-16384))
                     tail = error_log.read().decode(errors="replace")
                 if "out of memory" in tail.lower():
-                    raise RuntimeError("GPU memory exhausted. Use the local profile or a GPU with more VRAM.")
+                    raise RuntimeError("The graphics card ran out of memory. Choose Standard detail, or close other programs that use the GPU and continue.")
+                if process.returncode == -signal.SIGKILL:
+                    raise RuntimeError("The computer ran out of memory during this step. Finished work is saved: close other programs and press Continue reconstruction.")
                 if "patch_match_options.depth_min > 0" in tail:
                     raise RuntimeError("Depth estimation found an invalid camera depth range. "
                                        "The camera model contains degenerate views; retry with the updated worker.")

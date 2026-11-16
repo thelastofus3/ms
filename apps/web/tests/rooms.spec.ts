@@ -70,6 +70,39 @@ test("successfully queued room opens even when clearing local storage fails", as
   await page.getByLabel("Photos or video").setInputFiles(input);
   await page.getByRole("button", { name: "Upload and reconstruct" }).click();
   await expect(page.getByRole("heading", { name: "My room", exact: true })).toBeVisible();
-  await expect(page.getByText("Capture saved. Waiting for a GPU worker to claim this job.")).toBeVisible();
+  await expect(page.getByText("Capture saved. It starts as soon as the graphics card is free")).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a failed reconstruction continues from its saved steps on the same job", async ({ page }) => {
+  const failed = { ...queued, state: "FAILED", stage: "geometry", error: "The computer ran out of memory during this step. Finished work is saved: close other programs and press Continue reconstruction." };
+  let current: typeof queued = failed;
+  const posts: string[] = [];
+  await page.route("**/v1/rooms/**", route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    if (request.method() === "POST") posts.push(path);
+    if (path === "/v1/rooms/auth/me") return route.fulfill({ json: testAccount });
+    if (path === "/v1/rooms/quota") return route.fulfill({ json: testQuota });
+    if (path === "/v1/rooms/jobs/browser-job/resume") { current = { ...queued, stage: "queued" }; return route.fulfill({ json: current }); }
+    if (path === "/v1/rooms/jobs") return route.fulfill({ json: [current] });
+    return route.fulfill({ status: 404, json: { message: "Unexpected test request" } });
+  });
+  await page.goto("/#rooms");
+  await expect(page.getByRole("alert")).toContainText("ran out of memory");
+  await expect(page.getByRole("button", { name: "Start over from the upload" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue reconstruction" }).click();
+  await expect(page.getByText("It starts as soon as the graphics card is free")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue reconstruction" })).toHaveCount(0);
+  expect(posts).toEqual(["/v1/rooms/jobs/browser-job/resume"]);
+});
+
+test("several video clips of one room are accepted as one capture", async ({ page }) => {
+  const requests = await roomService(page);
+  await page.goto("/#rooms");
+  const clip = (name: string) => ({ name, mimeType: "video/mp4", buffer: Buffer.from("capture") });
+  await page.getByLabel("Photos or video").setInputFiles([clip("walk-1.mp4"), clip("walk-2.mp4"), clip("centre.mp4")]);
+  await expect(page.getByText("3 files · 0.0 MiB")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Upload and reconstruct" })).toBeEnabled();
+  expect(requests.some(request => request === "POST /v1/rooms/uploads")).toBe(false);
 });

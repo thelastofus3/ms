@@ -6,47 +6,33 @@ test.beforeEach(async ({ page, context }) => {
   await context.addCookies([{ name: "room_access_token", value: testAccessToken, domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "Strict" }]);
 });
 
-test("photographic app has no legacy entry and stores personal photos honestly", async ({
-  page,
-}) => {
-  await page.route("**/v1/photo-captures", async (route) => {
-    if (route.request().method() === "GET")
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    await route.continue();
-  });
+test("the avatar library has no legacy entry and takes a video, not photos", async ({ page }) => {
   await page.goto("/?mode=mesh#photos");
-  await expect(
-    page.getByRole("heading", { name: "Photo library" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Skeleton prototype" }),
-  ).toHaveCount(0);
-  await page.getByLabel("Photos or a video").setInputFiles({
-    name: "test.png",
-    mimeType: "image/png",
-    buffer: Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=",
-      "base64",
-    ),
-  });
-  // One photo can be saved but cannot start an avatar build.
-  await expect(page.getByText("1 photo selected — an avatar needs at least 8; you can still save them.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload and build avatar" })).toBeDisabled();
-  await page.getByRole("button", { name: "Upload only" }).click();
-  await expect(page.getByText("1 photos", { exact: true })).toBeVisible();
-  // One photo cannot become an avatar; the page says why instead of failing later.
-  await expect(page.getByRole("button", { name: "Build 3D avatar" })).toBeDisabled();
-  await expect(page.getByText("Add at least 8 photos to build an avatar.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Avatar library" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Skeleton prototype" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "New avatar from a video" })).toBeVisible();
+  await expect(page.getByText("Circle once in 20–60 s.")).toBeVisible();
+  const input = page.getByLabel("Avatar video");
+  await expect(input).toHaveAttribute("accept", /video\/mp4/);
+  await expect(input).not.toHaveAttribute("multiple", "");
+  // A photo is refused with the reason instead of becoming a set that cannot be built.
+  await input.setInputFiles({ name: "test.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") });
+  await expect(page.getByRole("alert")).toContainText("Avatars are built from a video, not from photos.");
+  await expect(page.getByRole("button", { name: "Upload and build avatar" })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole("link", { name: "Photo library", exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("heading", { name: "Photo library" })).toBeVisible();
-  await expect(page.getByText("1 photos", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Delete set" }).click();
-  await expect(page.getByText("No saved photo sets yet.")).toBeVisible();
-  await page.screenshot({
-    path: "../../.runtime/personal-photos-browser.png",
-    fullPage: true,
-  });
+  await expect(page.getByRole("link", { name: "Avatar library", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByText("No videos saved yet.")).toBeVisible();
+});
+
+test("a photo set saved earlier can still be rebuilt or is explained when too small", async ({ page }) => {
+  const set = (id: string, photo_count: number) => ({ id, created_at: "2026-10-26T09:00:00Z", photo_count, status: "photos_ready", job: null });
+  await page.route("**/v1/photo-captures", route => route.fulfill({ json: [set("11111111-1111-4111-8111-111111111111", 24), set("22222222-2222-4222-8222-222222222222", 1)] }));
+  await page.route("**/v1/photo-captures/*/photos/*", route => route.fulfill({ status: 404 }));
+  await page.goto("/#photos");
+  await expect(page.getByText("24 photos", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Build 3D avatar" }).first()).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Build 3D avatar" }).nth(1)).toBeDisabled();
+  await expect(page.getByText("This set has fewer than 8 photos, too few for an avatar. Upload a walk-around video instead.")).toBeVisible();
 });
 
 test("avatar build progress is visible in the library and the viewer", async ({ page }) => {
@@ -76,12 +62,13 @@ test("avatar build progress is visible in the library and the viewer", async ({ 
 test("a walk-around video can be saved as an avatar source", async ({ page }) => {
   await page.goto("/#photos");
   const video = Buffer.concat([Buffer.from("000000186674797069736f6d", "hex"), Buffer.alloc(8192)]);
-  const photo = { name: "a.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") };
-  const dropzone = page.getByLabel("Photos or a video");
-  await dropzone.setInputFiles([photo, { name: "turn.mp4", mimeType: "video/mp4", buffer: video }]);
-  await expect(page.getByRole("alert")).toHaveText("Choose either photos or one video, not both.");
+  const dropzone = page.getByLabel("Avatar video");
+  await dropzone.evaluate(node => node.setAttribute("multiple", ""));
+  await dropzone.setInputFiles([{ name: "a.mp4", mimeType: "video/mp4", buffer: video }, { name: "turn.mp4", mimeType: "video/mp4", buffer: video }]);
+  await expect(page.getByRole("alert")).toHaveText("Choose one video per avatar.");
   await dropzone.setInputFiles({ name: "turn.mp4", mimeType: "video/mp4", buffer: video });
   await expect(page.getByText("▶ turn.mp4 · 0 MB")).toBeVisible();
+  await expect(page.getByLabel("Selected video preview")).toBeVisible();
   await expect(page.getByRole("button", { name: "Upload and build avatar" })).toBeEnabled();
   await page.getByRole("button", { name: "Upload only" }).click();
   await expect(page.getByText("Video · 0 MB", { exact: true })).toBeVisible();
@@ -89,7 +76,7 @@ test("a walk-around video can be saved as an avatar source", async ({ page }) =>
   // Videos have no photo minimum; frames are chosen by the worker.
   await expect(page.getByRole("button", { name: "Build 3D avatar" })).toBeEnabled();
   await page.getByRole("button", { name: "Delete set" }).click();
-  await expect(page.getByText("No saved photo sets yet.")).toBeVisible();
+  await expect(page.getByText("No videos saved yet.")).toBeVisible();
 });
 
 test("dropping a video onto the drop zone selects it", async ({ page }) => {

@@ -30,15 +30,31 @@ export type DetectorHealth = {
 };
 export type PositionQuality = { positionMethod?: "floor" | "estimated"; uncertaintyMeters?: number };
 export type TrackedPerson = PositionQuality & { id: string; position: Point; confidence: number;
+  /** The avatar of the person this track was recognised as, by face. */
+  avatarId?: string;
+  /** Where the object detector boxed this person when no pose was available (normalised image coordinates). */
+  imageBox?: ImageDetection;
   /** Index of the detected pose this track was updated from in the current frame (absent for held tracks). */
-  poseIndex?: number };
+  poseIndex?: number;
+  /** Top of the head above the floor, when the true distance is known for a person seen only as a box: below about 1.4 m they are not standing. */
+  crownHeight?: number;
+  /** For a boxed person: how far the line of sight to the top of their head drops per metre of floor distance. */
+  crownSlope?: number };
 export type TrackingSnapshot = {
   sceneVersion: number; serverTime: number;
   cameras: { cameraId: string; name: string; calibrationRevision: string; streamId: string; ageMs: number; people: TrackedPerson[] }[];
 };
 /** A person's body in room axes (metres, hip-centred) with per-point visibility, for mirroring onto an avatar. */
-export type BodyPose = { points: [number, number, number][]; visibility: number[] };
-export type WorldPerson = PositionQuality & { id: string; label: string; position: Point; confidence: number; expiresAt: number; body?: BodyPose };
+export type BodyPose = { points: [number, number, number][]; visibility: number[];
+  /** Hips above the floor in metres, when the camera could measure it: places a seated or crouching avatar at the right height. */
+  hipHeight?: number };
+export type WorldPerson = PositionQuality & { id: string; label: string; position: Point; confidence: number; expiresAt: number; body?: BodyPose;
+  /** How many cameras this marker combines. */
+  cameras?: number;
+  /** Top of the head above the floor for a person whose body could not be read; see `TrackedPerson.crownHeight`. */
+  crownHeight?: number;
+  /** The recognised person's own avatar; absent for people nobody recognised. */
+  avatarId?: string };
 export type LiveCameraState = {
   jobId: string; name: string; cameraRunning: boolean;
   detectionState: "idle" | "loading" | "running" | "paused" | "failed";

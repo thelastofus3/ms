@@ -11,6 +11,30 @@ export function metersPerUnit(c: Calibration): number | undefined {
   const scale = c.meters / length;
   return length > 1e-6 && scale >= 1e-6 && scale <= 1e6 ? scale : undefined;
 }
+/** A phone filming a room is held at about chest height, which makes the capture its own ruler, good to roughly a tenth. */
+export const CAPTURE_HEIGHT_M = 1.45;
+/** A scale that needs no tape measure: the two detected floor points, given the length that puts the camera at chest height. */
+export function automaticScale(m: RoomManifest): Pick<Calibration, "measurement" | "meters"> | undefined {
+  const p = m.floorProposal, height = p?.captureHeight;
+  if (!p?.floorPoints || p.floorPoints.length < 2 || !height || !Number.isFinite(height) || height <= 0) return;
+  const [a, b] = p.floorPoints, length = distance(a, b);
+  return length > 1e-6 ? { measurement: [{ ...a }, { ...b }], meters: Number((length * CAPTURE_HEIGHT_M / height).toFixed(3)) } : undefined;
+}
+export function usesAutomaticScale(c: Calibration, m: RoomManifest): boolean {
+  const auto = automaticScale(m);
+  return !!auto && c.measurement.length === 2 && c.measurement.every((p, i) => distance(p, auto.measurement[i]) < 1e-9) && Math.abs(c.meters - auto.meters) < 1e-6;
+}
+/** How high the camera would have been carried if this calibration's scale were right. */
+export function captureHeightMeters(c: Calibration, m: RoomManifest): number | undefined {
+  const scale = metersPerUnit(c), height = m.floorProposal?.captureHeight;
+  return scale && height && Number.isFinite(height) && height > 0 ? scale * height : undefined;
+}
+/** A measured distance that implies an implausible camera height is almost always a mistyped or misplaced measurement. */
+export function scaleWarning(c: Calibration, m: RoomManifest): string | undefined {
+  const height = captureHeightMeters(c, m);
+  if (height === undefined || usesAutomaticScale(c, m) || height >= 1.2 && height <= 1.8) return;
+  return `With this distance the camera would have been carried ${height.toFixed(2)} m above the floor during the capture; people hold it at about 1.2 to 1.8 m. The room is probably ${height < 1.2 ? "larger" : "smaller"} than this scale makes it, and people would look ${height < 1.2 ? "too big" : "too small"} in it. Check the distance and its two ends, or use the automatic scale.`;
+}
 export function floorFrame(c: Calibration, m: RoomManifest) {
   if (c.floor.length !== 3) return;
   const origin = vector(c.floor[0]);
@@ -60,6 +84,8 @@ export function calibrationFromManifest(m: RoomManifest): Calibration {
     c.boundary = structuredClone(p.boundary ?? []);
     c.spawn = p.spawn ? { ...p.spawn } : null;
   }
+  // The room opens at a usable size straight away; measuring a real distance afterwards only refines it.
+  Object.assign(c, automaticScale(m));
   return c;
 }
 export function projectToFloor(p: Point, c: Calibration, m: RoomManifest): Point {
@@ -152,7 +178,9 @@ export function calibrationIssues(c: Calibration, m: RoomManifest) {
   if (c.dimensions?.some(d => !d.name.trim() || d.name.length > 80 || scale && distance(d.a, d.b) * scale < 0.001)) issues.review = "Give each dimension a name and two separate endpoints before saving.";
   return issues;
 }
-export const draftKey = (m: RoomManifest) => `room-calibration-v2:${m.sceneId}:${m.version}`;
+// A draft starts from the detected floor, so it dies with it: a re-levelled room kept showing its old tilted floor (2026-11-15).
+const floorMark = (m: RoomManifest) => (m.floorProposal?.floorPoints ?? []).flatMap(p => [p.x, p.y, p.z]).reduce((h, v) => Math.imul(h ^ Math.round(v * 1e4), 16777619) >>> 0, 2166136261).toString(36);
+export const draftKey = (m: RoomManifest) => `room-calibration-v3:${m.sceneId}:${m.version}:${floorMark(m)}`;
 export function readDraft(m: RoomManifest): Calibration | undefined {
   try {
     const c = JSON.parse(localStorage.getItem(draftKey(m)) || "null") as Calibration | null;

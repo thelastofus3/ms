@@ -7,23 +7,21 @@ async function signIn(page: Page) {
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
 }
 
-test("a delayed 401 from an earlier photo upload does not sign out a new session", async ({ page }) => {
+test("a delayed 401 from an earlier video upload does not sign out a new session", async ({ page }) => {
   let finishUpload: (() => Promise<void>) | undefined;
   await page.route("**/v1/rooms/auth/**", route => route.fulfill({ status: route.request().url().endsWith("/logout") ? 204 : 200, ...(route.request().url().endsWith("/logout") ? {} : { json: route.request().url().endsWith("/login") ? loginResponse() : testAccount }) }));
-  await page.route("**/v1/photo-captures", route => {
-    if (route.request().method() === "GET") return route.fulfill({ json: [] });
-    finishUpload = () => route.fulfill({ status: 401, json: { detail: "Old session expired" } });
-  });
+  await page.route("**/v1/photo-captures", route => route.fulfill({ json: [] }));
+  await page.route("**/v1/photo-captures/video", route => { finishUpload = () => route.fulfill({ status: 401, json: { detail: "Old session expired" } }); });
   await page.goto("/#photos");
-  await page.locator(".photo-workspace input[type=file]").setInputFiles({ name: "person.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") });
+  await page.locator(".photo-workspace input[type=file]").setInputFiles({ name: "person.mp4", mimeType: "video/mp4", buffer: Buffer.alloc(2048) });
   await page.getByRole("button", { name: "Upload only", exact: true }).click();
   await expect.poll(() => !!finishUpload).toBe(true);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page);
-  await expect(page.getByRole("heading", { name: "Photo library", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Avatar library", exact: true })).toBeVisible();
   await finishUpload!();
   await page.waitForTimeout(300);
-  await expect(page.getByRole("heading", { name: "Photo library", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Avatar library", exact: true })).toBeVisible();
 });
 
 test("a delayed self-account update response does not expire a newer login", async ({ page }) => {

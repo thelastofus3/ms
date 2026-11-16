@@ -96,6 +96,10 @@ export class GaussianRig {
     }
     return matrices;
   }
+  /** Height of every joint in the given pose, in the avatar's own frame (feet on y = 0 at rest). */
+  jointHeights(angles: number[][]): number[] {
+    return this.world(angles).map((matrix) => matrix.elements[13]);
+  }
   matrices(angles: number[][]): Matrix4[] {
     return this.world(angles).map((world, index) =>
       world.multiply(this.inverseCanonical[index]),

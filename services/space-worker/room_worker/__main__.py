@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import os
@@ -26,13 +27,23 @@ def main():
                           region_name="us-east-1", config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
     storage.bucket = BUCKET
     logging.info("GPU worker ready: %s; waiting for room jobs", torch.cuda.get_device_name(0))
+    # Shared with the avatar worker: two jobs on one 6 GB card stall each other and exhaust RAM, so the later one waits in its queue.
+    gpu = open("/gpu-lock/gpu.lock", "a") if os.path.isdir("/gpu-lock") else None
     while True:
         job = None
         work = None
         allocations = {}
         try:
+            if gpu:
+                try:
+                    fcntl.flock(gpu, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    time.sleep(5)
+                    continue
             job = claim()
             if job is None:
+                if gpu:
+                    fcntl.flock(gpu, fcntl.LOCK_UN)
                 time.sleep(5)
                 continue
             logging.info("Claimed room job %s with profile %s", job["id"], job["profile"])
@@ -60,6 +71,13 @@ def main():
                     storage.upload_file(str(path), BUCKET, prefix+path.name, Callback=upload_progress)
                     confirm_output(job, prefix+path.name, path.stat().st_size)
                 lease.publish(prefix+"manifest.json", report)
+                # A published room needs only dataset/ (camera alignment reads its COLMAP model). Depth maps, decoded frames and
+                # trainer state are ~50 MB per frame and filled the disk when left behind.
+                for other in work.parent.iterdir():
+                    if other != work:
+                        shutil.rmtree(other, ignore_errors=True)
+                for name in ("dense", "frames", "input", "training"):
+                    shutil.rmtree(work/name, ignore_errors=True)
                 logging.info("Reconstructed %s; awaiting metric calibration", job["id"])
         except Exception as error:
             logging.exception("Room reconstruction stopped")
@@ -79,11 +97,14 @@ def main():
                                 diagnostics["logPrefix"] = prefix+"logs/"
                         except Exception:
                             logging.exception("Could not reserve or retain attempt logs")
-                    fail(job, "Worker interrupted; retry after checking worker/storage availability" if isinstance(error, Stopped) else str(error),
+                    fail(job, "The reconstruction was interrupted. Finished steps are saved: press Continue reconstruction." if isinstance(error, Stopped) else str(error),
                          diagnostics, interrupted=isinstance(error, Stopped))
                 except Exception:
                     logging.exception("Could not persist failure; lease recovery will reclaim the job")
             time.sleep(5)
+        finally:
+            if gpu and job:
+                fcntl.flock(gpu, fcntl.LOCK_UN)
 
 
 if __name__ == "__main__":

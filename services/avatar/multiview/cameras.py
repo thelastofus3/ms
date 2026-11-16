@@ -66,8 +66,8 @@ def main(single_camera="0"):
     (WORK / "cameras-report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({k: v for k, v in report.items() if k != "cameras"}, indent=2))
     if report["registered"] < max(8, 0.75 * report["images"]):
-        print(f"ERROR Only {report['registered']} of {report['images']} photos could be placed in 3D. "
-              "Photograph the person from all sides with overlapping, sharp views of a textured background.", flush=True)
+        print(f"ERROR Only {report['registered']} of {report['images']} views could be placed in 3D. "
+              "Circle the person slowly so neighbouring views overlap, and keep a textured, static background in the shot.", flush=True)
         sys.exit(1)
     progress(1.0, f"{report['registered']}/{report['images']} cameras, {report['meanReprojectionErrorPx']:.2f} px error",
              registered=report["registered"], reprojectionErrorPx=round(report["meanReprojectionErrorPx"], 3))

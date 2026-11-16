@@ -98,7 +98,8 @@ services:
       ROOM_SCRATCH: /scratch
       ROOM_MAX_SCRATCH_GIB: ${ROOM_MAX_SCRATCH_GIB:-120}
       ROOM_MAX_SPLATS: ${ROOM_MAX_SPLATS:-2500000}
-    volumes: ["room-scratch:/scratch"]
+    # gpu-lock: one heavy job at a time across room and avatar workers (shared 6 GB card and RAM).
+    volumes: ["room-scratch:/scratch", "gpu-lock:/gpu-lock"]
     depends_on:
       room-api: { condition: service_healthy }
       room-progress: { condition: service_started }
@@ -229,6 +230,7 @@ services:
       AVATAR_TRAIN_STEPS: ${AVATAR_TRAIN_STEPS:-15000}
     volumes:
       - avatar-photos:/data
+      - gpu-lock:/gpu-lock
       - ./.runtime/models:/models
       # Live code during development; the image also contains a copy.
       - ./services/avatar/multiview:/code:ro
@@ -249,6 +251,7 @@ services:
       timeout: 3s
       retries: 20
 volumes:
+  gpu-lock:
   room-db:
   room-storage:
   room-scratch:

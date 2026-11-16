@@ -50,7 +50,7 @@ def connect():
 def claim():
     with connect() as db:
         db.execute("""UPDATE room_jobs SET state=CASE WHEN cancel_requested THEN 'CANCELLED' ELSE 'FAILED' END,
-            error=CASE WHEN cancel_requested THEN NULL ELSE 'Worker lease expired after three attempts' END,
+            error=CASE WHEN cancel_requested THEN NULL ELSE 'The reconstruction was interrupted three times, usually because the computer ran out of memory or the worker restarted. Finished steps are saved: press Continue reconstruction.' END,
             lease_token=NULL, lease_until=NULL, updated_at=now()
             WHERE kind='capture' AND state='RUNNING' AND lease_until<now() AND (cancel_requested OR attempts>=3)""")
         row = db.execute("""SELECT j.*, u.media FROM room_jobs j JOIN room_uploads u ON u.id=j.upload_id
@@ -63,7 +63,7 @@ def claim():
             return None
         token = uuid.uuid4()
         db.execute("""UPDATE room_jobs SET state='RUNNING',stage='preprocessing',progress=0,error=NULL,
-            attempts=attempts+1,lease_token=%s,lease_until=now()+interval '120 seconds',updated_at=now() WHERE id=%s""", (token, row["id"]))
+            attempts=attempts+1,lease_token=%s,lease_until=now()+interval '300 seconds',updated_at=now() WHERE id=%s""", (token, row["id"]))
         row["lease_token"] = token
         return row
 
@@ -89,18 +89,22 @@ class Lease:
         self.thread.join(timeout=15)
 
     def _heartbeat(self):
+        renewed = time.monotonic()
         while not self.done.is_set():
             try:
                 with connect() as db:
-                    row = db.execute("""UPDATE room_jobs SET lease_until=now()+interval '120 seconds'
+                    row = db.execute("""UPDATE room_jobs SET lease_until=now()+interval '300 seconds'
                         WHERE id=%s AND lease_token=%s AND state='RUNNING' AND lease_until>now() AND NOT cancel_requested
                         RETURNING id""", (self.job["id"], self.job["lease_token"])).fetchone()
                     if not row:
                         self.stop.set()
                         return
+                    renewed = time.monotonic()
             except Exception:
-                self.stop.set()
-                return
+                # A swapping host or a restarting database misses single renewals; give up only when the lease itself is nearly gone.
+                if time.monotonic() - renewed > 240:
+                    self.stop.set()
+                    return
             self.done.wait(20)
 
     def check(self):

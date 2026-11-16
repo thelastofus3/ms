@@ -292,10 +292,14 @@ def run(config_path, output_path, progress_path):
                 progress('estimate_pose', i+1, len(tracks), 'background tracks', 'Recovering static landmarks from registered room cameras')
         learned = (query_pixels[[qi for qi,_ in accepted]], np.asarray([p for _,p in accepted]).reshape(-1, 3))
         hypothesis = solve(*learned, folder, size, live_size)
-        sets = [distinct_union(verified, learned)]
+        # The learned landmarks stand on their own: mixing in every classic match first buried 43 good points under ~400
+        # unrelated ones and the support share fell to 8 % (2026-11-15). Classic matches join only where they agree with the
+        # learned camera, which unrelated matches do by chance about once in 20 000.
+        sets = [learned, distinct_union(verified, learned)]
         if plausible_hypothesis(hypothesis, manifest, size, live_size):
-            sets.append(distinct_union(verified, guided_raw(raw, hypothesis, size), learned))
+            sets.insert(1, distinct_union(learned, guided_raw(verified, hypothesis, size), guided_raw(raw, hypothesis, size)))
             names = improve_order(names, checked, model, hypothesis, scale)
+        best = None
         for pixels, points in sets:
             pose = solve(pixels, points, folder, size, live_size)
             if pose is None:
@@ -304,6 +308,10 @@ def run(config_path, output_path, progress_path):
                 loc.validated_registration(pose, pixels, manifest, size, live_size)
             except loc.LocalizationError:
                 continue
+            if best is None or sum(pose['inliers']) > sum(best[0]['inliers']):
+                best = pose, pixels
+        if best:
+            pose, pixels = best
             progress('validate_pose', sum(pose['inliers']), len(pose['inliers']), 'consistent background landmarks', 'Camera pose passed room, lens and background coverage checks')
             write_json(output_path, {'pose': pose, 'imagePoints': pixels.tolist(), 'referencesChecked': checked,
                                      'triangulatedPoints': len(accepted)})

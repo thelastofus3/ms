@@ -109,7 +109,7 @@ test("a PLY uploader can view their owned photo sets without capture creation co
   await page.route("**/v1/photo-captures", route => route.fulfill({ json: [{ id: "owned-capture", created_at: "2026-10-10T12:00:00Z", photo_count: 1, status: "photos_ready" }] }));
   await page.route("**/v1/photo-captures/owned-capture/photos/0", route => route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") }));
   await page.goto("/#photos");
-  await expect(page.getByRole("heading", { name: "Photo library", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Avatar library", exact: true })).toBeVisible();
   await expect(page.getByText("1 photos", { exact: true })).toBeVisible();
   await expect(page.locator(".photo-workspace input[type=file]")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Upload only", exact: true })).toHaveCount(0);

@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @RestController
 @RequestMapping("/v1/rooms/jobs/{job}/tracking")
 public class TrackingController {
-    private static final long FRESH_MS=1500, MAX_CAPTURE_AGE_MS=3000, MAX_FUTURE_MS=5000;
+    private static final long FRESH_MS=3000, MAX_CAPTURE_AGE_MS=3000, MAX_FUTURE_MS=5000;
     private final JdbcTemplate db;
     private final ObjectStorage storage;
     private final ObjectMapper json;
@@ -28,7 +28,8 @@ public class TrackingController {
     public record CameraRequest(String name,Integer sceneVersion,Integer imageWidth,Integer imageHeight,List<TrackingHomography.Pair> points) {}
     public record StopRequest(UUID streamId) {}
     public record Position(Double x,Double y,Double z) {}
-    public record Person(String id,Position position,Double confidence,String positionMethod,Double uncertaintyMeters) {}
+    /** avatarId: the photo capture whose avatar this person was recognised as in the browser; absent for anonymous tracks. */
+    public record Person(String id,Position position,Double confidence,String positionMethod,Double uncertaintyMeters,String avatarId) {}
     public record Frame(Integer sceneVersion,UUID calibrationRevision,UUID streamId,Long sequence,Long capturedAt,List<Person> people) {}
     record Navigation(double[][] boundary,double floorY) {}
     record Scene(int version,Navigation navigation,String manifestKey) {}
@@ -119,6 +120,20 @@ public class TrackingController {
             return view(camera(job,id,false));
         });
     }
+    @DeleteMapping("/cameras/{id}")
+    public Map<String,Object> delete(@PathVariable UUID job,@PathVariable UUID id,HttpServletRequest request) {
+        return tx.execute(status -> {
+            scene(job,owner(request),null,true);camera(job,id,true);
+            if(!db.queryForList("SELECT id FROM room_camera_alignments WHERE job_id=? AND camera_id=? AND state IN ('QUEUED','RUNNING')",job,id).isEmpty())
+                throw conflict("This camera is being located. Wait for it to finish, or cancel it, before deleting the camera.");
+            // A finished alignment that was never applied must not turn into a new camera once its camera is gone.
+            db.update("UPDATE room_camera_alignments SET state='FAILED',stage='expired',error='The camera was deleted.' WHERE job_id=? AND camera_id=? AND state='READY'",job,id);
+            db.update("UPDATE room_camera_alignments SET camera_id=NULL,camera_revision=NULL WHERE job_id=? AND camera_id=?",job,id);
+            db.update("UPDATE room_camera_alignments SET applied_camera_id=NULL WHERE job_id=? AND applied_camera_id=?",job,id);
+            db.update("DELETE FROM room_tracking_cameras WHERE id=? AND job_id=?",id,job);
+            return Map.of("deleted",true);
+        });
+    }
     @PostMapping("/cameras/{id}/start")
     public Map<String,Object> start(@PathVariable UUID job,@PathVariable UUID id,HttpServletRequest request) {
         return tx.execute(status -> {
@@ -164,9 +179,13 @@ public class TrackingController {
                 if(person.uncertaintyMeters()!=null && (!Double.isFinite(person.uncertaintyMeters()) || person.uncertaintyMeters()<0 || person.uncertaintyMeters()>3) ||
                         "estimated".equals(person.positionMethod()) && person.uncertaintyMeters()==null)
                     throw new IllegalArgumentException("Estimated positions require finite uncertainty between zero and three metres.");
+                if(person.avatarId()!=null && !person.avatarId().matches("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"))
+                    throw new IllegalArgumentException("A recognised person must reference an avatar by its identifier.");
                 if(Math.abs(p.y()-scene.navigation().floorY())>0.15 || !nearFootprint(p.x(),p.z(),scene.navigation().boundary()))
                     throw new IllegalArgumentException("Detection positions must lie on or near the saved room's walking floor.");
-                if(confidence>=0.35)people.add(person);
+                // The browser tracker already confirms people over several frames. A seated person or a head above furniture is
+                // located from a detector box at 0.2-0.3 confidence; at 0.35 here they never reached the room viewer.
+                if(confidence>=0.1)people.add(person);
             }
             db.update("UPDATE room_tracking_cameras SET last_sequence=?,last_captured_at=?,snapshot=?::jsonb,snapshot_at=now() WHERE id=? AND job_id=?",body.sequence(),captured,encode(people),id,job);
             return Map.of("accepted",true);
@@ -175,7 +194,7 @@ public class TrackingController {
     @GetMapping
     public Map<String,Object> latest(@PathVariable UUID job,@RequestParam int sceneVersion,HttpServletRequest request) {
         var scene=scene(job,owner(request),sceneVersion,false);long now=System.currentTimeMillis();var cameras=new ArrayList<Map<String,Object>>();
-        for(var row:db.queryForList("SELECT * FROM room_tracking_cameras WHERE job_id=? AND scene_version=? AND active_stream IS NOT NULL AND snapshot_at>now()-interval '1500 milliseconds'",job,scene.version())) {
+        for(var row:db.queryForList("SELECT * FROM room_tracking_cameras WHERE job_id=? AND scene_version=? AND active_stream IS NOT NULL AND snapshot_at>now()-interval '3000 milliseconds'",job,scene.version())) {
             if(row.get("last_captured_at")==null)continue;
             long received=((Timestamp)row.get("snapshot_at")).getTime(),captured=((Number)row.get("last_captured_at")).longValue();
             long age=Math.max(0,Math.max(now-received,now-captured));if(age>FRESH_MS)continue;

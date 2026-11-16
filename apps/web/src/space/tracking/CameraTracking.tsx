@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import * as THREE from "three";
 import * as roomApi from "../api";
 import { calibrationFromManifest } from "../calibration";
@@ -8,6 +8,12 @@ import * as trackingApi from "./api";
 import { CameraDetector } from "./detector";
 import { fitHomography } from "./geometry";
 import { PersonTracker } from "./tracker";
+import { measureHipHeight } from "./positioning";
+import { DetectionStabilizer, poseExtent, type SteadyDetection } from "./stabilizer";
+import { SharedPeople } from "./fusion";
+import { faceEngine } from "./faces";
+import { FaceIdentifier, MIN_FACE_PIXELS } from "./identity";
+import { gallery, headCrop, useFaceGallery, useRecognitionEnabled } from "./recognition";
 import { bodyInRoom } from "../../gaussian/retarget";
 import { PeopleAvatarPicker } from "../PeopleAvatarPicker";
 import type { CameraCalibration, CameraCaptureControl, Correspondence, DetectorHealth, ImageDetection, ImagePoint, LiveCameraState, PoseLandmark, TrackedPerson } from "./types";
@@ -37,9 +43,15 @@ function sourceBinding(jobId: string, cameraId: string): string | null {
   try { return localStorage.getItem(bindingKey(jobId, cameraId)); } catch { return null; }
 }
 
-export function CameraTracking({ jobId, active = true, onState, controlRef }: { jobId: string; active?: boolean; onState?: (state: LiveCameraState | null) => void; controlRef?: MutableRefObject<CameraCaptureControl | null> }) {
+export function CameraTracking({ jobId, active = true, onState, controlRef, deck, shared, source = "camera" }: { jobId: string; active?: boolean; onState?: (state: LiveCameraState | null) => void; controlRef?: MutableRefObject<CameraCaptureControl | null>;
+  /** Switcher between the cameras running in this browser, and the place they pool their people. */
+  deck?: ReactNode; shared?: SharedPeople; source?: string }) {
+  const ownPeople = useRef<SharedPeople | undefined>(undefined), pool = shared ?? (ownPeople.current ??= new SharedPeople());
+  const identifier = useRef(new FaceIdentifier()), recognize = useRecognitionEnabled(), recognizeRef = useRef(recognize), faces = useFaceGallery(recognize && !!jobId);
+  recognizeRef.current = recognize;
+  const faceLooks = useRef(0);
   const host = useRef<HTMLDivElement>(null), renderer = useRef<RoomRenderer | undefined>(undefined);
-  const video = useRef<HTMLVideoElement>(null), overlay = useRef<HTMLCanvasElement>(null);
+  const video = useRef<HTMLVideoElement>(null), overlay = useRef<HTMLCanvasElement>(null), steady = useRef(new DetectionStabilizer());
   const mounted = useRef(false), captureGeneration = useRef(0), runGeneration = useRef(0), detectorGeneration = useRef(0);
   const sceneRef = useRef<RoomManifest | null>(null), media = useRef<MediaStream | null>(null);
   const detector = useRef<CameraDetector | null>(null), tracker = useRef(new PersonTracker());
@@ -121,10 +133,10 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
   const stopTracking = () => {
     ++runGeneration.current;
     autoPublish.current = null;
-    tracker.current.reset();
+    (tracker.current.reset(), identifier.current.reset());
     const session = activeStream.current; activeStream.current = null;
     if (session) { session.pending = undefined; session.abort.abort(); void trackingApi.stop(session.jobId, session.camera.id, session.streamId).catch(() => {}); }
-    renderer.current?.setPeople([]);
+    pool.report(source, null);
     if (mounted.current) { setTracking(false); setStarting(false); setPeople([]); setPositionMessage(""); }
   };
   const stopAlignment = (notice = false) => {
@@ -181,6 +193,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
       return () => { mounted.current = false; abort.abort(); };
     }
     const view = new RoomRenderer(host.current!); renderer.current = view;
+    const unsubscribe = pool.subscribe(() => view.setPeople(pool.people(Date.now())));
     view.onStatus = value => { if (mounted.current) setStatus(value); };
     view.onPick = (raw: Point) => {
       const image = pendingImage.current, manifest = sceneRef.current;
@@ -211,7 +224,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
     const deviceChange = () => void refreshDevices().catch(() => {});
     navigator.mediaDevices?.addEventListener("devicechange", deviceChange);
     return () => {
-      mounted.current = false; abort.abort(); stopCamera(); view.setTrackingCameras([]); view.dispose(); renderer.current = undefined; sceneRef.current = null;
+      mounted.current = false; abort.abort(); stopCamera(); unsubscribe(); pool.report(source, null); view.setTrackingCameras([]); view.dispose(); renderer.current = undefined; sceneRef.current = null;
       navigator.mediaDevices?.removeEventListener("devicechange", deviceChange);
     };
   }, [jobId]);
@@ -223,8 +236,8 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
   useEffect(() => {
     if (!cameraRunning || frozen) return;
     const timer = setInterval(() => {
-      if (lastDetectionAt.current && Date.now() - lastDetectionAt.current >= 1500) {
-        lastDetectionAt.current = 0; setPeople([]); setDetectedCount(0); setFeetVisible(false); setPositionMessage("Waiting for a fresh camera frame. Old positions have expired."); clearOverlay(); renderer.current?.setPeople([]);
+      if (lastDetectionAt.current && Date.now() - lastDetectionAt.current >= 3000) {
+        lastDetectionAt.current = 0; setPeople([]); setDetectedCount(0); setFeetVisible(false); setPositionMessage("Waiting for a fresh camera frame. Old positions have expired."); clearOverlay(); pool.report(source, null);
       }
     }, 100);
     return () => clearInterval(timer);
@@ -241,6 +254,18 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
     const camera = saved.find(value => value.id === id);
     setSelectedId(camera?.id ?? null); setName(camera?.name ?? `Room camera ${saved.length + 1}`); changePoints(camera?.points ?? []);
     setDeviceId(camera ? sourceBinding(jobId, camera.id) ?? "" : "");
+  };
+  const removeCamera = async () => {
+    const camera = saved.find(value => value.id === selectedId);
+    if (!camera || !window.confirm(`Delete the saved camera "${camera.name}"? Its position in the room is removed; the room itself is not changed.`)) return;
+    stopCamera(); setError(""); setSaveBusy(true);
+    try {
+      await trackingApi.deleteCamera(jobId, camera.id);
+      if (!mounted.current) return;
+      setSaved(values => values.filter(value => value.id !== camera.id)); setSelectedId(null); setName("Room camera"); changePoints([]); setInvalidCalibration(false);
+      setStatus(`Camera "${camera.name}" was deleted.`);
+    } catch (e) { if (mounted.current) setError(message(e)); }
+    finally { if (mounted.current) setSaveBusy(false); }
   };
   const startCamera = async () => {
     setError("");
@@ -370,32 +395,50 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
       if (alignmentOperation.current === operation) { alignmentOperation.current = null; if (mounted.current) setAlignmentBusy(false); }
     }
   };
+  /** Looks at the face of one person per turn and labels every track with the avatar its person was recognised as. */
+  const identify = (tracked: TrackedPerson[], landmarks: PoseLandmark[][], timestamp: number): TrackedPerson[] => {
+    const known = identifier.current, source = video.current;
+    known.seen(tracked.map(person => person.id), timestamp);
+    if (!recognizeRef.current || !source) return tracked;
+    if (gallery.entries.some(entry => entry.descriptors.length) && !faceEngine().busy) for (const person of tracked) {
+      if (person.poseIndex === undefined && !person.imageBox || !known.due(person.id, timestamp)) continue;
+      // Every third look is wider, for the faces the usual framing misses.
+      const crop = headCrop(person.poseIndex !== undefined ? landmarks[person.poseIndex] : undefined, person.imageBox, source.videoWidth, source.videoHeight, MIN_FACE_PIXELS, ++faceLooks.current % 3 ? 6.5 : 8.5);
+      if (!crop) continue;
+      known.attempted(person.id, timestamp);
+      const epoch = known.epoch;
+      // Cropped from the full-resolution video, not the downscaled detection frame: recognition needs every pixel of the face.
+      void createImageBitmap(source, crop.x, crop.y, crop.width, crop.height).then(bitmap => faceEngine().describe(bitmap)).then(found => {
+        if (known.epoch !== epoch) return;
+        const offset = (face: typeof found[number]) => Math.hypot(face.box.x + face.box.width / 2 - crop.width / 2, face.box.y + face.box.height / 2 - crop.height / 2);
+        const face = found.filter(candidate => candidate.score >= 0.5 && candidate.box.width >= MIN_FACE_PIXELS).sort((a, b) => offset(a) - offset(b))[0];
+        if (face) known.observe(person.id, gallery.match(face.descriptor), timestamp);
+      }).catch(() => { /* A failed look is simply repeated later. */ });
+      break;
+    }
+    return tracked.map(person => { const avatarId = known.identity(person.id); return avatarId ? { ...person, avatarId } : person; });
+  };
   const previewBoxes = (detections: ImageDetection[] = []) => detections.filter(box => [box.x, box.y, box.width, box.height, box.confidence].every(Number.isFinite) && box.width > 0 && box.height > 0 && box.confidence >= 0.35);
-  const drawDetection = (landmarks: PoseLandmark[][], detections: ImageDetection[] = []) => {
+  const drawDetection = (landmarks: PoseLandmark[][], detections: SteadyDetection[] = []) => {
     const canvas = overlay.current; if (!canvas || !video.current) return;
     canvas.width = video.current.videoWidth; canvas.height = video.current.videoHeight;
     const context = canvas.getContext("2d"); if (!context) return;
     context.strokeStyle = "#aee9c6"; context.fillStyle = "#aee9c6"; context.lineWidth = Math.max(2, canvas.width / 600); context.font = `${Math.max(16, canvas.width / 55)}px sans-serif`;
-    const boxes = previewBoxes(detections);
-    const drawBox = (left: number, top: number, right: number, bottom: number, label: string) => {
+    const boxes = detections;
+    const drawBox = (left: number, top: number, right: number, bottom: number, label: string, held = false) => {
       const x = Math.max(0, left), y = Math.max(0, top), endX = Math.min(canvas.width, right), endY = Math.min(canvas.height, bottom);
       if (endX <= x || endY <= y) return;
-      context.strokeRect(x, y, endX - x, endY - y);
+      // Dashed: the person was found a moment ago and this frame missed them.
+      context.setLineDash(held ? [context.lineWidth * 4, context.lineWidth * 3] : []); context.strokeRect(x, y, endX - x, endY - y); context.setLineDash([]);
       context.fillText(label, Math.max(4, Math.min(x, canvas.width - canvas.width * 0.3)), Math.max(24, y - 14));
     };
-    boxes.forEach((box, index) => drawBox(box.x * canvas.width, box.y * canvas.height, (box.x + box.width) * canvas.width, (box.y + box.height) * canvas.height, `Human detected${boxes.length > 1 ? ` ${index + 1}` : ""}`));
-    landmarks.forEach((pose, index) => {
+    boxes.forEach((box, index) => drawBox(box.x * canvas.width, box.y * canvas.height, (box.x + box.width) * canvas.width, (box.y + box.height) * canvas.height, `Human detected${boxes.length > 1 ? ` ${index + 1}` : ""}`, box.held));
+    landmarks.forEach(pose => {
       const visible = (i: number) => pose[i] && Number.isFinite(pose[i].x) && Number.isFinite(pose[i].y) && pose[i].x >= 0 && pose[i].x <= 1 && pose[i].y >= 0 && pose[i].y <= 1 && (pose[i].visibility ?? 1) >= 0.5;
       [[11, 12], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [29, 31], [28, 30], [30, 32]].forEach(([a, b]) => {
         if (!visible(a) || !visible(b)) return;
         context.beginPath(); context.moveTo(pose[a].x * canvas.width, pose[a].y * canvas.height); context.lineTo(pose[b].x * canvas.width, pose[b].y * canvas.height); context.stroke();
       });
-      const reliable = pose.filter((_, i) => visible(i));
-      if (!boxes.length && reliable.length) {
-        const left = Math.min(...reliable.map(p => p.x)) * canvas.width, top = Math.min(...reliable.map(p => p.y)) * canvas.height;
-        const right = Math.max(...reliable.map(p => p.x)) * canvas.width, bottom = Math.max(...reliable.map(p => p.y)) * canvas.height;
-        drawBox(left - 8, top - 8, right + 8, bottom + 8, `Human detected${landmarks.length > 1 ? ` ${index + 1}` : ""}`);
-      }
       [29, 30, 31, 32].forEach(i => { if (visible(i)) { context.beginPath(); context.arc(pose[i].x * canvas.width, pose[i].y * canvas.height, 4, 0, Math.PI * 2); context.fill(); } });
     });
   };
@@ -415,7 +458,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
   };
   const startPreview = async () => {
     if (!mounted.current || !media.current || !video.current || calibrationMode.current) return;
-    stopPreview(); setDetectionError(""); setDetectionState("loading");
+    stopPreview(); steady.current.reset(); setDetectionError(""); setDetectionState("loading");
     const generation = ++detectorGeneration.current, element = video.current;
     const instance = new CameraDetector(); detector.current = instance;
     const active = () => mounted.current && generation === detectorGeneration.current && detector.current === instance;
@@ -433,7 +476,9 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
         if (!active() || calibrationMode.current || !video.current) return;
         const validFoot = (p: PoseLandmark | undefined) => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && p.x > 0.005 && p.x < 0.995 && p.y > 0.005 && p.y < 0.995 && (p.visibility ?? 0) >= 0.65 && (p.presence ?? 1) >= 0.65;
         setFeetVisible(landmarks.some(pose => validFoot(pose[29]) && validFoot(pose[31]) || validFoot(pose[30]) && validFoot(pose[32])));
-        lastDetectionAt.current = timestamp; setDetectedCount(Math.max(landmarks.length, previewBoxes(detections).length)); drawDetection(landmarks, detections);
+        // The preview and the count show people steadied across frames; room positions below still use only this frame's measurements.
+        const shown = steady.current.update([...previewBoxes(detections), ...landmarks.flatMap(pose => poseExtent(pose) ?? [])], timestamp);
+        lastDetectionAt.current = timestamp; setDetectedCount(shown.length); drawDetection(landmarks, shown);
         const alignment = alignmentOperation.current;
         if (alignment && (video.current.videoWidth !== alignment.width || video.current.videoHeight !== alignment.height)) { stopAlignment(); setInvalidCalibration(true); setFixedConfirmed(false); setError("Camera dimensions changed during alignment. Locate this camera again."); }
         const session = activeStream.current, navigation = sceneRef.current?.navigation;
@@ -445,15 +490,18 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
           if (video.current.videoWidth && video.current.videoHeight) setSize({ width: video.current.videoWidth, height: video.current.videoHeight });
           stopTracking(); setError("Video frame size changed. Match the camera to the room again before displaying positions."); return;
         }
-        const positions = tracker.current.update(landmarks, camera, navigation, timestamp);
+        const positions = identify(tracker.current.update(landmarks, camera, navigation, timestamp, detections), landmarks, timestamp);
         setPeople(positions);
         const diagnostics = [...new Set(tracker.current.diagnostics)];
-        setPositionMessage(diagnostics.length ? diagnostics.join(" ") : positions.length ? positions.some(person => person.positionMethod === "estimated") ? "Estimated positions use assumed adult body dimensions. Visible feet provide a floor-based position instead." : "Visible feet are positioned on the calibrated room floor."
-          : Math.max(landmarks.length, previewBoxes(detections).length) ? camera.geometry ? "Human detected, but usable feet, paired shoulders or face landmarks are unavailable. Show more of the body and room background." : "Human detected. This manual floor calibration needs clearly visible feet; automatically locate the camera to enable body-depth estimates." : "No human is detected in the current camera frame.");
+        setPositionMessage(diagnostics.length ? diagnostics.join(" ") : positions.length ? positions.some(person => person.positionMethod === "estimated") ? "Estimated positions use body and head size, and the height measured while a person's feet were visible. Visible feet provide a floor-based position instead." : "Visible feet are positioned on the calibrated room floor."
+          : shown.length ? camera.geometry ? "Human detected, but no usable feet, torso or head measurement is available. Show more of the body and room background." : "Human detected. This manual floor calibration needs clearly visible feet; automatically locate the camera to enable body-depth estimates." : "No human is detected in the current camera frame.");
         // Each tracked person's 3D body, rotated from camera to room axes, lets the preview avatar mirror their pose.
-        const bodyOf = (person: TrackedPerson) => person.poseIndex !== undefined && camera.geometry && worldLandmarks?.[person.poseIndex]
-          ? bodyInRoom(worldLandmarks[person.poseIndex], camera.geometry.worldFromCamera) : undefined;
-        renderer.current?.setPeople(positions.map(person => ({ ...person, body: bodyOf(person), id: `${camera.id}:${session.streamId}:${person.id}`, label: `Human ${person.id} - ${camera.name}${person.positionMethod === "estimated" ? ` - Estimated +/- ${(person.uncertaintyMeters ?? 0).toFixed(1)} m` : ""}`, expiresAt: timestamp + 1500 })));
+        const bodyOf = (person: TrackedPerson) => {
+          const body = person.poseIndex !== undefined && camera.geometry && worldLandmarks?.[person.poseIndex] ? bodyInRoom(worldLandmarks[person.poseIndex], camera.geometry.worldFromCamera) : undefined;
+          return body && { ...body, hipHeight: measureHipHeight(landmarks[person.poseIndex!], camera, { x: person.position.x, z: person.position.z }, navigation.floorY) };
+        };
+        // Every camera in this browser reports here; the room view shows them combined into one marker per person.
+        pool.report(source, { cameraId: camera.id, name: camera.name, people: positions.map(person => ({ ...person, body: bodyOf(person) })), expiresAt: timestamp + 3000, center: camera.geometry ? { x: camera.geometry.center.x, z: camera.geometry.center.z } : undefined, height: camera.geometry ? camera.geometry.center.y - navigation.floorY : undefined });
         if (timestamp - session.lastQueuedAt >= 200) { session.lastQueuedAt = timestamp; session.pending = { people: positions, capturedAt: timestamp }; void publishLatest(session); }
       }, fail, health => {
         if (!active() || calibrationMode.current) return;
@@ -462,8 +510,8 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
           if (health.recovered && !activeStream.current) setPositionMessage("");
           return;
         }
-        lastDetectionAt.current = 0; setPeople([]); setDetectedCount(0); setFeetVisible(false); clearOverlay(); renderer.current?.setPeople([]);
-        if (health.consecutiveStaleFrames === 1) tracker.current.reset();
+        lastDetectionAt.current = 0; setPeople([]); setDetectedCount(0); setFeetVisible(false); clearOverlay(); pool.report(source, null);
+        if (health.consecutiveStaleFrames === 1) (tracker.current.reset(), identifier.current.reset());
         setPositionMessage(`Detection took ${(health.inferenceMs / 1000).toFixed(1)}s, so this old observation cannot be used as a live room position. Stop heavy tasks or use a faster device. Tracking will resume automatically with fresh frames.`);
       });
       if (active()) setDetectionState("running");
@@ -478,7 +526,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
       const result = await trackingApi.start(jobId, camera.id, requestAbort.current.signal);
       session = { jobId, camera, streamId: result.streamId, sequence: 0, abort: new AbortController(), busy: false, lastQueuedAt: 0 };
       if (!mounted.current || generation !== runGeneration.current) { void trackingApi.stop(jobId, camera.id, result.streamId).catch(() => {}); return; }
-      activeStream.current = session; tracker.current.reset();
+      activeStream.current = session; (tracker.current.reset(), identifier.current.reset());
       setTracking(true); setStarting(false); setStatus("Live human positions appear in the room on the right. Open the separate viewer to walk around them.");
     } catch (e) { if (mounted.current && generation === runGeneration.current) { stopTracking(); if (!ignoredAbort(e)) setError(message(e)); } else if (session) void trackingApi.stop(jobId, camera.id, session.streamId).catch(() => {}); }
   };
@@ -487,6 +535,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
   return <main className="room-tracking" hidden={!active}>
     <header className="room-tracking-heading"><div><p className="eyebrow">Live camera tracking</p><h1>{roomName}</h1><p>Locate a fixed camera once. People are then recognized and positioned automatically, without manual human tags.</p></div>
       <div className="room-tracking-actions"><a className="room-link-button" href={`#room-viewer?job=${encodeURIComponent(jobId)}`}>Open viewer</a><a className="room-link-button" href={`#room-viewer?job=${encodeURIComponent(jobId)}`} target="_blank" rel="noopener">Open viewer in new tab</a><a href={`#rooms?job=${encodeURIComponent(jobId)}`}>Edit room setup</a></div></header>
+    {deck}
     {error && <p className="room-error" role="alert">{error}</p>}
     <ol className="room-camera-guide" aria-label="Camera setup steps"><li data-active={guidedStep === 1}><span>1</span><div><strong>Start camera</strong><small>People are detected automatically in the video.</small></div></li><li data-active={guidedStep === 2}><span>2</span><div><strong>Automatically locate camera</strong><small>Match its static room background to the reconstruction.</small></div></li><li data-active={guidedStep === 3}><span>3</span><div><strong>People move in 3D</strong><small>Floor positions and body-depth estimates are labelled separately.</small></div></li></ol>
     <div className="room-tracking-layout">
@@ -495,7 +544,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
         <div className="room-tracking-settings"><label>Camera configuration<select value={selectedId ?? ""} disabled={tracking || starting || saveBusy || alignmentBusy} onChange={event => selectCamera(event.target.value)}><option value="">New camera</option>{saved.map(camera => <option key={camera.id} value={camera.id}>{camera.name}{camera.sceneVersion !== scene?.version ? " (needs recalibration)" : ""}</option>)}</select></label>
           <label>Name<input value={name} maxLength={80} disabled={tracking || starting || saveBusy || alignmentBusy} onChange={event => setName(event.target.value)} /></label>
           <label>Video source<select value={deviceId} disabled={captureBusy || tracking || starting || saveBusy || alignmentBusy} onChange={event => { stopCamera(); setDeviceId(event.target.value); setInvalidCalibration(true); changePoints([]); }}><option value="">Default camera</option>{devices.map((device, i) => <option key={device.deviceId || i} value={device.deviceId}>{device.label || `Camera ${i + 1}`}</option>)}{deviceId && !devices.some(device => device.deviceId === deviceId) && <option value={deviceId}>Previously selected camera</option>}</select></label></div>
-        <div className="room-tracking-actions"><button className="primary" disabled={roomLoading || !scene || captureBusy || cameraRunning} onClick={() => void startCamera()}>{captureBusy ? "Starting camera..." : "Start camera"}</button><button disabled={!cameraRunning && !captureBusy} onClick={() => { stopCamera(); setStatus("Camera stopped. Live markers expire automatically."); }}>Stop camera</button></div>
+        <div className="room-tracking-actions"><button className="primary" disabled={roomLoading || !scene || captureBusy || cameraRunning} onClick={() => void startCamera()}>{captureBusy ? "Starting camera..." : "Start camera"}</button><button disabled={!cameraRunning && !captureBusy} onClick={() => { stopCamera(); setStatus("Camera stopped. Live markers expire automatically."); }}>Stop camera</button>{selectedId && <button disabled={tracking || starting || saveBusy || alignmentBusy || captureBusy} onClick={() => void removeCamera()}>Delete this camera</button>}</div>
         <div className="room-detection-status" data-state={detectionState} data-health={detectionHealth?.status} role="status">{detectionState === "loading" ? "Loading automatic person detection..." : detectionState === "running" ? detectionHealth?.status === "stale" ? "Detection is too slow for live positions. Waiting for fresh results." : `Automatic detection on · ${detectedCount} human${detectedCount === 1 ? "" : "s"} detected` : detectionState === "paused" ? "Detection is paused while matching the camera to the room." : detectionState === "failed" ? `Person detection could not run: ${detectionError}` : "Start camera to detect people automatically."}{detectionState === "failed" && cameraRunning && !frozen && <button onClick={() => void startPreview()}>Retry detection</button>}</div>
         {detectionState === "running" && <p className="room-help">{detectionHealth?.status === "stale" ? `The last result took ${(detectionHealth.inferenceMs / 1000).toFixed(1)}s. Old detections and markers are hidden. Stop heavy tasks or use a faster device; fresh results resume automatically.` : lastDetectionAt.current ? `Last analyzed camera frame ${Math.max(0, (progressClock - lastDetectionAt.current) / 1000).toFixed(1)}s ago${detectionHealth ? ` · ${(detectionHealth.inferenceMs / 1000).toFixed(2)}s processing time` : ""}. Person detection runs continuously; it has no completion percentage.` : "Waiting for the first analyzed camera frame."}</p>}
         <div className={`room-camera-frame${frozen ? " is-calibrating" : ""}`} style={{ aspectRatio: size ? `${size.width}/${size.height}` : "16/9" }} onClick={pickImage}>
@@ -522,6 +571,11 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
           <button className="primary" disabled={!fit || !!pending || !name.trim() || saveBusy} onClick={() => void saveCalibration()}>{saveBusy ? "Saving..." : "Save camera position"}</button></div>}</details>
           {!frozen && <div className="room-tracking-controls"><h2>Display humans in the room</h2>
             <PeopleAvatarPicker renderer={renderer} ready={!!scene} />
+            {recognize && faces.status !== "idle" && <p className="room-help" role="status">{faces.status === "loading" ? `Reading faces from the photos of your avatars (${faces.done} of ${faces.total})...`
+              : faces.status === "failed" ? `Face recognition is unavailable: ${faces.error}`
+              : faces.avatars.some(avatar => avatar.faces) ? `Face recognition is ready for ${faces.avatars.filter(avatar => avatar.faces).length} of ${faces.avatars.length} avatar${faces.avatars.length === 1 ? "" : "s"}. A recognized person wears their own avatar, whatever they are wearing. Faces are compared in this browser and are not uploaded.`
+              : faces.avatars.length ? "None of your avatars' photos shows a clear face, so nobody can be recognized. Build an avatar from photos that include the face from the front."
+              : "Build an avatar in the Avatar library to have its owner recognized by face."}</p>}
             <p className="room-help">With an avatar selected and the camera automatically located, the avatar mirrors the visible body pose (arms, legs, torso, head). Hidden limbs use the walk or idle animation.</p>
             {savedCamera && <p className="room-help">Saved camera · room version {savedCamera.sceneVersion} · {savedCamera.geometry ? `automatically aligned with ${savedCamera.geometry.inliers} background matches; ${savedCamera.geometry.reprojectionErrorPx.toFixed(1)} px reprojection error` : `manual floor calibration; ${(savedCamera.fitErrorMeters * 100).toFixed(1)} cm reference fit residual (not physical accuracy)`}</p>}
             {cameraRunning && savedCamera && (!dimensionsMatch || invalidCalibration || savedCamera.sceneVersion !== scene?.version) && <p className="room-notice">The camera source, frame size or room setup changed. Recalibrate before tracking.</p>}
@@ -533,7 +587,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
             <div className="room-tracking-actions"><button className="primary" disabled={!canTrack || tracking || starting} onClick={() => void startTracking()}>{starting ? "Connecting room positions..." : "Display humans in 3D"}</button><button disabled={!tracking && !starting && !autoPublish.current} onClick={() => { stopTracking(); setStatus("3D positions stopped. Automatic person detection continues in the camera image."); }}>Stop 3D positions</button></div>
             <p aria-live="polite" className="room-tracking-count">{tracking ? `${detectedCount} detected in video · ${floorCount} floor-based · ${estimatedCount} estimated position${estimatedCount === 1 ? "" : "s"}` : detectionState === "running" ? `${detectedCount} detected in video · 3D positions are not enabled` : "3D positions are not enabled"}</p>
             {positionMessage && tracking ? <p className="room-position-reason" role="status">{positionMessage}</p> : detectedCount > 0 && <p className="room-help">{!calibrationUsable ? "People are recognized automatically. Locate the camera once to place them in the room; you never need to tag a human." : !tracking ? "People are recognized in the image. Confirm the fixed camera or display humans in 3D to enable automatic room positions." : "Waiting for usable body landmarks to locate this person."}{!feetVisible && !savedCamera?.geometry ? " Feet are not reliably visible; manual floor calibration needs visible feet, or use automatic camera alignment for body-depth estimates." : ""}</p>}
-            {people.length > 0 && <ul className="room-tracking-people">{people.map(person => <li key={person.id} data-estimated={person.positionMethod === "estimated"}><strong>Human {person.id}</strong><span>{person.positionMethod === "estimated" ? `Estimated +/- ${(person.uncertaintyMeters ?? 0).toFixed(1)} m · ` : "Floor-based · "}X {person.position.x.toFixed(2)} m · Z {person.position.z.toFixed(2)} m</span></li>)}</ul>}
+            {people.length > 0 && <ul className="room-tracking-people">{people.map(person => <li key={person.id} data-estimated={person.positionMethod === "estimated"}><strong>Human {person.id}{person.avatarId ? ` · ${faces.avatars.find(avatar => avatar.id === person.avatarId)?.label ?? "Recognized"}` : ""}</strong><span>{person.positionMethod === "estimated" ? `Estimated +/- ${(person.uncertaintyMeters ?? 0).toFixed(1)} m · ` : "Floor-based · "}X {person.position.x.toFixed(2)} m · Z {person.position.z.toFixed(2)} m</span></li>)}</ul>}
           </div>}
       </section>
       <section className="room-tracking-map"><h2>{frozen ? `Select matching room point ${points.length + 1}` : tracking ? "Live human positions in your room" : "Your room and camera placement"}</h2><p className="room-help">{frozen ? pending ? "Click the room floor at the image landmark. Drag to rotate; scroll to zoom." : "Select the image landmark first. Keep your current view, or choose Top view below to locate the floor." : tracking ? "Green markers use visible feet on the floor. Amber markers estimate body depth and show an uncertainty radius." : "Automatically locate the camera once. Human markers then follow detections here and in the room viewer without manual tags."}</p>
@@ -541,7 +595,7 @@ export function CameraTracking({ jobId, active = true, onState, controlRef }: { 
         <div className="room-view room-tracking-view" ref={host} />
         <div className="room-tracking-actions"><button disabled={!scene || roomLoading} onClick={() => renderer.current?.topView()}>Top view</button><button disabled={!scene || roomLoading} onClick={() => renderer.current?.resetView()}>Reset view</button><button disabled={!people.length} onClick={() => { if (renderer.current?.focusPeople()) setStatus("Showing current human positions in the room."); }}>Find humans</button><label><input type="checkbox" checked={collision} disabled={!scene} onChange={event => { setCollision(event.target.checked); renderer.current?.showCollision(event.target.checked); }} /> Show surfaces</label></div>
         <p className="room-tracking-status" role="status">{status}</p>
-        <details className="room-tracking-notes"><summary>Placement and accuracy</summary><p>Show static room background so automatic alignment can locate the fixed camera. If that fails, the optional manual fallback matches floor landmarks such as tile corners; furniture tops and wall points cannot calibrate the floor.</p><p>Visible feet provide a floor-based position. When feet are hidden, automatic camera geometry can estimate depth from shoulders or facial landmarks using assumed adult body dimensions. These amber estimates have uncertainty and may be unavailable when the body is too cropped or ambiguous. Children, unusual body proportions and tilted poses can reduce accuracy.</p><p>Keep the camera fixed. Moving it, changing zoom or crop, or editing room setup requires recalibration. Background-match residuals measure alignment consistency, not the physical accuracy of a person's position.</p><p>Labels identify temporary anonymous tracks, not a person's identity. Each camera has separate tracks; the system does not recognize identity or merge people across cameras.</p></details>
+        <details className="room-tracking-notes"><summary>Placement and accuracy</summary><p>Show static room background so automatic alignment can locate the fixed camera. If that fails, the optional manual fallback matches floor landmarks such as tile corners; furniture tops and wall points cannot calibrate the floor.</p><p>Visible feet provide a floor-based position. When feet are hidden, automatic camera geometry can estimate depth from the torso, shoulders or head alone, using adult body dimensions and the height measured while that person's feet were visible. A head above furniture is enough; a camera mounted well above head height gives the best head-only positions. These amber estimates have uncertainty and may be unavailable when the body is too cropped or ambiguous. Children, unusual body proportions and tilted poses can reduce accuracy.</p><p>Keep the camera fixed. Moving it, changing zoom or crop, or editing room setup requires recalibration. Background-match residuals measure alignment consistency, not the physical accuracy of a person's position.</p><p>With face recognition on, a person whose face matches the photos of one of your avatars is shown as that avatar. The comparison runs in this browser; only the matched avatar is shared with the room viewer. Everyone else is a temporary anonymous track. A person seen by several cameras is shown as one marker where their views cross; this uses position only, the system does not recognize identity.</p></details>
       </section>
     </div>
   </main>;

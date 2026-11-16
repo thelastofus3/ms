@@ -69,6 +69,21 @@ describe("retargetBody", () => {
     expect(result.angles[J("right_elbow")]).not.toBeNull();
   });
 
+  it("seats a person whose legs are hidden under a desk instead of copying the model's guess for them", () => {
+    // The pose model still reports the hidden legs, half sure of them and pointing sideways.
+    const guessed = observed.map(v => v.clone());
+    guessed[J("left_knee")].add(new Vector3(0.5, 0.4, 0)); guessed[J("left_ankle")].add(new Vector3(0.9, 0.8, 0));
+    const body = landmarks(guessed);
+    for (const i of [25, 26, 27, 28, 31, 32]) body.visibility[i] = 0.6;
+    const result = retargetBody(rig, { ...body, hipHeight: 0.5 })!, rebuilt = posed(result.angles.map(a => a ?? [0, 0, 0]));
+    // Thighs level with the hips, feet under the knees.
+    expect(Math.abs(rebuilt[J("left_knee")].y - rebuilt[J("left_hip")].y)).toBeLessThan(0.08);
+    expect(rebuilt[J("left_knee")].y - rebuilt[J("left_ankle")].y).toBeGreaterThan(0.38);
+    expect(rebuilt[J("right_knee")].z - rebuilt[J("right_hip")].z).toBeGreaterThan(0.35);
+    // Standing (hips at full height), the same unsure legs are left to the walk animation.
+    expect(retargetBody(rig, { ...body, hipHeight: 0.93 })!.angles[J("left_hip")]).toBeNull();
+  });
+
   it("needs both hips to orient the body", () => {
     expect(retargetBody(rig, landmarks(observed, [24]))).toBeUndefined();
   });

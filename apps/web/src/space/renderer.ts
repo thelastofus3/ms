@@ -9,19 +9,31 @@ import type { CameraCalibration, WorldPerson } from "./tracking/types";
 import { expireSession, sessionRevision } from "../session";
 import { GAIT_PHASE_PER_METRE, locomotionPose } from "../gaussian/rig";
 import { fetchRigPackage, RiggedAvatar, type RigPackage } from "../gaussian/riggedAvatar";
-import { PoseFollower, retargetBody } from "../gaussian/retarget";
+import { PoseFollower, retargetBody, seatedPose } from "../gaussian/retarget";
 import type { BodyPose } from "./tracking/types";
 
 /** A mirrored body pose older than this falls back to the walk/idle animation. */
-const BODY_POSE_MAX_AGE_MS = 700;
+// Long enough to bridge a missed frame at two analysed frames a second; at 0.7 s the avatar kept dropping back to its idle animation.
+const BODY_POSE_MAX_AGE_MS = 2500;
+/**
+ * The visitor's body starts this far above the floor and never leaves floor level. A reconstructed room's floor is strewn
+ * with low things (a rug edge, shoes, a bag, mesh noise), and a blanket hanging off a bed reads as a ramp: walking with
+ * a body that touched the floor stopped at every one of them and climbed onto the beds, with the view under the ceiling
+ * (2026-11-15). Anything lower than a step is walked through; furniture still blocks.
+ */
+const WALK_CLEARANCE = 0.3;
+/** A head lower than this above the floor is not a standing adult's (their crown is at about 1.7 m). */
+const LOW_CROWN = 1.45;
+/** A visitor is no wider than this: in a furnished room 5 cm on each side is the difference between passing a bed and not. */
+const WALK_RADIUS = 0.2;
 
 type PersonMarker = {
   group: THREE.Group; target: THREE.Vector3; expiresAt: number; label: string; estimated: boolean; labelSprite: THREE.Sprite;
   uncertaintyRing: THREE.Mesh; body: THREE.Mesh;
   /** Photographic avatar replacing the capsule; heading/gait follow the marker's own smoothed motion. */
-  avatar?: RiggedAvatar; avatarPending?: boolean; heading: number; phase: number; speed: number; previous: THREE.Vector3;
+  avatar?: RiggedAvatar; avatarId?: string; avatarKey?: string; personalFailed?: boolean; heading: number; phase: number; speed: number; previous: THREE.Vector3;
   /** Latest observed body (room axes) for mirroring the person's pose, and when it arrived. */
-  observedBody?: BodyPose; bodyAt: number; follower: PoseFollower;
+  observedBody?: BodyPose; bodyAt: number; follower: PoseFollower; lift: number; crownHeight?: number;
 };
 
 let physics: Promise<void> | undefined;
@@ -39,7 +51,8 @@ export class RoomRenderer {
   private floorReferences = new THREE.Group();
   private trackingCameras = new THREE.Group();
   private peopleMarkers = new Map<string, PersonMarker>();
-  private avatarPackage?: RigPackage;
+  private avatarPackages = new Map<string, Promise<RigPackage>>();
+  private avatarResolver: ((avatarId: string) => string) | null = null;
   private avatarUrl = "";
   private avatarAbort = new AbortController();
   private spark: SparkRenderer;
@@ -184,16 +197,17 @@ export class RoomRenderer {
         const input = new THREE.Vector3(Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA")), 0, Number(this.keys.has("KeyS")) - Number(this.keys.has("KeyW")));
         if (document.pointerLockElement !== this.canvas) input.set(0, 0, 0);
         if (input.lengthSq()) input.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw).multiplyScalar(n.speed / 60);
-        this.vertical = Math.max(-10, this.vertical - 9.81 / 60); input.y = this.vertical / 60;
+        // The visitor stays at floor level: see WALK_CLEARANCE.
+        input.y = 0;
         this.controller.computeColliderMovement(this.capsule, input);
         const movement = this.controller.computedMovement(), position = this.player.translation();
-        this.player.setNextKinematicTranslation({ x: position.x + movement.x, y: position.y + movement.y, z: position.z + movement.z });
+        this.player.setNextKinematicTranslation({ x: position.x + movement.x, y: position.y, z: position.z + movement.z });
         this.world.step();
         if (this.controller.computedGrounded()) this.vertical = 0;
         this.accumulator -= 1 / 60;
       }
       const p = this.player.translation();
-      this.camera.position.set(p.x, p.y - n.capsuleHeight / 2 + n.eyeHeight, p.z);
+      this.camera.position.set(p.x, n.floorY + n.eyeHeight, p.z);
       this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
     } else this.controls.update();
     const wallTime = Date.now();
@@ -346,9 +360,9 @@ export class RoomRenderer {
         sprite.position.y = 1.95; sprite.renderOrder = 1001; group.add(sprite);
         group.position.copy(vector(person.position)); this.people.add(group);
         marker = { group, target: vector(person.position), expiresAt: person.expiresAt, label: person.label, estimated, labelSprite: sprite, uncertaintyRing: uncertainty,
-          body, heading: 0, phase: 0, speed: 0, previous: vector(person.position), bodyAt: 0, follower: new PoseFollower() };
+          body, heading: 0, phase: 0, speed: 0, previous: vector(person.position), bodyAt: 0, follower: new PoseFollower(), lift: 0 };
         this.peopleMarkers.set(person.id, marker);
-        void this.attachAvatar(marker);
+        marker.avatarId = person.avatarId; void this.syncAvatar(marker);
       }
       // Changing a confidence label must not discard the interpolated position.
       if (marker.label !== person.label || marker.estimated !== estimated) {
@@ -360,37 +374,55 @@ export class RoomRenderer {
       marker.uncertaintyRing.visible = estimated && Number.isFinite(uncertainty) && uncertainty > 0;
       if (marker.uncertaintyRing.visible) marker.uncertaintyRing.scale.setScalar(Math.min(1.5, uncertainty));
       marker.target.copy(vector(person.position)); marker.expiresAt = person.expiresAt;
+      // Recognised a moment later, or no longer: switch between the person's own avatar and the default look.
+      if (marker.avatarId !== person.avatarId) { marker.avatarId = person.avatarId; marker.personalFailed = false; void this.syncAvatar(marker); }
       if (person.body) { marker.observedBody = person.body; marker.bodyAt = Date.now(); }
+      marker.crownHeight = person.crownHeight;
     }
     for (const [id, marker] of this.peopleMarkers) if (!current.has(id)) {
       this.removeMarker(id);
     }
   }
-  /** Shows tracked people as a rigged photographic avatar (`gaussian-rig` package URL) or, with null, as capsules. */
+  /** Default look of people nobody recognised: a rigged avatar (`gaussian-rig` package URL) or, with null, the green capsule. */
   async setPeopleAvatar(baseUrl: string | null) {
     if ((baseUrl ?? "") === this.avatarUrl) return;
-    this.avatarAbort.abort(); this.avatarAbort = new AbortController();
-    this.avatarUrl = baseUrl ?? ""; this.avatarPackage = undefined;
-    for (const marker of this.peopleMarkers.values()) this.dropAvatar(marker);
-    if (!baseUrl) return;
-    const signal = this.avatarAbort.signal;
-    const pkg = await fetchRigPackage(baseUrl, signal);
-    if (signal.aborted || this.disposed) return;
-    this.avatarPackage = pkg;
-    for (const marker of this.peopleMarkers.values()) void this.attachAvatar(marker);
+    this.avatarUrl = baseUrl ?? "";
+    for (const marker of this.peopleMarkers.values()) void this.syncAvatar(marker);
+    if (baseUrl) await this.avatarPackageFor(baseUrl);
   }
-  private async attachAvatar(marker: PersonMarker) {
-    const pkg = this.avatarPackage;
-    if (!pkg || marker.avatar || marker.avatarPending) return;
-    marker.avatarPending = true;
+  /** Lets recognised people wear their own avatar; `resolve` turns a person's avatar id into its rig package URL. */
+  setPersonalAvatars(resolve: ((avatarId: string) => string) | null) {
+    this.avatarResolver = resolve;
+    for (const marker of this.peopleMarkers.values()) { marker.personalFailed = false; void this.syncAvatar(marker); }
+  }
+  private avatarPackageFor(url: string): Promise<RigPackage> {
+    let pending = this.avatarPackages.get(url);
+    if (!pending) {
+      const request = pending = fetchRigPackage(url, this.avatarAbort.signal); this.avatarPackages.set(url, request);
+      // A failed download may succeed later (the avatar is still being built), so it is not remembered.
+      request.catch(() => { if (this.avatarPackages.get(url) === request) this.avatarPackages.delete(url); });
+    }
+    return pending;
+  }
+  private async syncAvatar(marker: PersonMarker) {
+    const personal = marker.avatarId && this.avatarResolver && !marker.personalFailed ? this.avatarResolver(marker.avatarId) : "", wanted = personal || this.avatarUrl;
+    if (marker.avatarKey === wanted) return;
+    marker.avatarKey = wanted; this.dropAvatar(marker);
+    if (!wanted) return;
     try {
-      const avatar = await RiggedAvatar.create(pkg);
-      // The marker may have expired, or the chosen avatar changed, while the mesh was initialising.
-      if (this.disposed || pkg !== this.avatarPackage || ![...this.peopleMarkers.values()].includes(marker)) { avatar.dispose(); return; }
+      const avatar = await RiggedAvatar.create(await this.avatarPackageFor(wanted));
+      // The marker may have expired, or should look different by now, while the mesh was initialising.
+      if (this.disposed || marker.avatarKey !== wanted || ![...this.peopleMarkers.values()].includes(marker)) { avatar.dispose(); return; }
+      this.dropAvatar(marker);
       marker.avatar = avatar; marker.group.add(avatar.mesh); marker.body.visible = false;
       marker.previous.copy(marker.group.position);
       this.animateAvatar(marker, 0);
-    } finally { marker.avatarPending = false; }
+    } catch {
+      // A personal avatar that cannot be loaded falls back to the default look instead of leaving the person invisible.
+      if (marker.avatarKey !== wanted) return;
+      marker.avatarKey = undefined;
+      if (wanted === personal) { marker.personalFailed = true; void this.syncAvatar(marker); }
+    }
   }
   private dropAvatar(marker: PersonMarker) {
     if (!marker.avatar) return;
@@ -404,17 +436,30 @@ export class RoomRenderer {
     marker.phase += step * GAIT_PHASE_PER_METRE;
     const base = locomotionPose(avatar.rig.data, marker.phase, marker.speed / 0.5);
     // Mirror the person's observed body where it is visible; unseen joints keep the walk/idle animation.
-    const mirrored = marker.observedBody && Date.now() - marker.bodyAt < BODY_POSE_MAX_AGE_MS ? retargetBody(avatar.rig.data, marker.observedBody) : undefined;
+    const fresh = marker.observedBody && Date.now() - marker.bodyAt < BODY_POSE_MAX_AGE_MS ? marker.observedBody : undefined;
+    // A head measured well below standing height belongs to someone seated or lying, whatever else is unknown about them.
+    const low = marker.crownHeight !== undefined && marker.crownHeight < LOW_CROWN;
+    const observed = fresh && fresh.hipHeight === undefined && low ? { ...fresh, hipHeight: 0.5 } : fresh;
+    const mirrored = observed && retargetBody(avatar.rig.data, observed);
+    // The body could not be read, but the hips were measured at chair height or the head is low: sit, facing the way last known.
+    const sitting = !mirrored && (low || observed?.hipHeight !== undefined && observed.hipHeight < 0.75 * avatar.rig.data.rest_joints[0][1]) ? seatedPose(avatar.rig.data) : undefined;
     if (!mirrored && step > 0.002) {
       // Without a body pose, face the walking direction; keep the last heading while standing (the avatar faces +z).
       const target = Math.atan2(dx, dz), turn = Math.atan2(Math.sin(target - marker.heading), Math.cos(target - marker.heading));
       marker.heading += turn * (1 - Math.exp(-elapsed * 8));
     }
-    const target = mirrored ? base.map((angles, i) => mirrored.angles[i] ?? angles) : base;
+    const target = mirrored ? base.map((angles, i) => mirrored.angles[i] ?? angles) : sitting ? base.map((angles, i) => sitting[i] ?? angles) : base;
     const smoothed = marker.follower.update(target, mirrored ? mirrored.yaw : marker.heading, elapsed);
     if (mirrored) marker.heading = smoothed.yaw;
     avatar.mesh.rotation.y = smoothed.yaw;
     avatar.pose(smoothed.angles);
+    // The rig bends around a pelvis fixed at standing height, so a seated pose lifted the feet and left the body hanging
+    // in the air. Lower it until the feet reach the floor, or to the hip height the camera measured when that is higher
+    // (someone sitting on a bed with their feet up).
+    const rest = avatar.rig.data.rest_joints, grounded = Math.min(...rest.map(joint => joint[1])) - Math.min(...avatar.rig.jointHeights(smoothed.angles));
+    const hips = mirrored || sitting ? observed?.hipHeight : undefined, wanted = hips !== undefined ? Math.max(grounded, hips - rest[0][1]) : grounded;
+    marker.lift += (wanted - marker.lift) * (elapsed > 0 ? 1 - Math.exp(-elapsed * 6) : 1);
+    avatar.mesh.position.y = marker.lift;
   }
   private removeMarker(id: string) {
     const marker = this.peopleMarkers.get(id);
@@ -623,7 +668,7 @@ export class RoomRenderer {
     await initializePhysics();
     if (this.disposed || generation !== this.generation) return;
     this.world?.free(); this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 }); this.world.timestep = 1 / 60;
-    const n = this.manifest.navigation;
+    const n = this.manifest.navigation, radius = Math.min(n.capsuleRadius, WALK_RADIUS);
     this.scene.updateMatrixWorld(true);
     this.collision.traverse(object => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -642,17 +687,30 @@ export class RoomRenderer {
       this.world.createCollider(RAPIER.ColliderDesc.cuboid(length / 2, 2.5, 0.025).setTranslation((a[0] + b[0]) / 2, n.floorY + 2.5, (a[1] + b[1]) / 2).setRotation(q));
     }
     for (const box of n.obstacles) this.world.createCollider(RAPIER.ColliderDesc.cuboid(box.size[0] / 2, box.size[1] / 2, box.size[2] / 2).setTranslation(...box.center));
-    const spawn = { x: n.spawn[0], y: n.spawn[1] + n.capsuleHeight / 2 + 0.035, z: n.spawn[2] };
-    const shape = new RAPIER.Capsule(n.capsuleHeight / 2 - n.capsuleRadius, n.capsuleRadius);
+    const spawn = { x: n.spawn[0], y: n.floorY + WALK_CLEARANCE + (n.capsuleHeight - WALK_CLEARANCE) / 2, z: n.spawn[2] };
+    const shape = new RAPIER.Capsule(Math.max(0.05, (n.capsuleHeight - WALK_CLEARANCE) / 2 - radius), radius);
     this.world.step();
-    let blocked = false;
     // Slightly shrink the clearance probe so normal floor contact is not an overlap.
-    const probe = new RAPIER.Capsule(shape.halfHeight, n.capsuleRadius - 0.015);
-    this.world.intersectionsWithShape(spawn, { x: 0, y: 0, z: 0, w: 1 }, probe, () => { blocked = true; return false; });
-    if (blocked) { this.world.free(); this.world = undefined; throw Error("Spawn intersects a collision surface. Choose an open floor location and recalibrate."); }
+    const world = this.world, upright = { x: 0, y: 0, z: 0, w: 1 };
+    const fits = (x: number, z: number, radius: number) => {
+      let blocked = false;
+      world.intersectionsWithShape({ x, y: spawn.y, z }, upright, new RAPIER.Capsule(shape.halfHeight, radius), () => { blocked = true; return false; });
+      return !blocked;
+    };
+    if (!fits(spawn.x, spawn.z, radius - 0.015)) {
+      // The suggested spawn is the middle of the detected floor, which in a furnished room is often 10 cm from a bed
+      // (2026-11-15). Stand at the nearest place a person fits instead, preferring one with elbow room.
+      const inside = (x: number, z: number) => n.boundary.reduce((result, a, i) => { const b = n.boundary[(i + 1) % n.boundary.length]; return (a[1] > z) !== (b[1] > z) && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0] ? !result : result; }, false);
+      const xs = n.boundary.map(p => p[0]), zs = n.boundary.map(p => p[1]), places: [number, number][] = [];
+      for (let x = Math.min(...xs); x <= Math.max(...xs); x += 0.08) for (let z = Math.min(...zs); z <= Math.max(...zs); z += 0.08) if (inside(x, z)) places.push([x, z]);
+      places.sort((a, b) => Math.hypot(a[0] - spawn.x, a[1] - spawn.z) - Math.hypot(b[0] - spawn.x, b[1] - spawn.z));
+      const place = places.slice(0, 4000).find(([x, z]) => fits(x, z, radius + 0.1)) ?? places.slice(0, 4000).find(([x, z]) => fits(x, z, radius - 0.015));
+      if (!place) { this.world.free(); this.world = undefined; throw Error("No open floor is large enough to stand on. Open setup and mark a walking area clear of furniture."); }
+      spawn.x = place[0]; spawn.z = place[1];
+    }
     this.player = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(spawn.x, spawn.y, spawn.z));
-    this.capsule = this.world.createCollider(RAPIER.ColliderDesc.capsule(shape.halfHeight, n.capsuleRadius), this.player);
-    this.controller = this.world.createCharacterController(0.015); this.controller.enableSnapToGround(0.15); this.controller.enableAutostep(0.15, 0.3, false);
+    this.capsule = this.world.createCollider(RAPIER.ColliderDesc.capsule(shape.halfHeight, radius), this.player);
+    this.controller = this.world.createCharacterController(0.015);
     this.yaw = n.yaw; this.pitch = 0; this.vertical = 0; this.accumulator = 0;
     this.controls.enabled = false; this.walking = true; this.annotations.visible = false; this.keys.clear();
     this.onStatus?.("Click the room, then use WASD and the mouse. Escape releases the mouse.");

@@ -24,10 +24,11 @@ describe("room capture selection", () => {
     expect(validateRoomCapture(photos(501))).toMatch(/500/);
   });
 
-  it("rejects a photo/video mixture and multiple videos", () => {
+  it("rejects a photo/video mixture and accepts several clips of one room", () => {
     const video = photo("room.mp4", 1, "video/mp4");
-    expect(validateRoomCapture([video, ...photos()])).toMatch(/one video|single video/i);
-    expect(validateRoomCapture([video, video])).toMatch(/one video|single video/i);
+    expect(validateRoomCapture([video, ...photos()])).toMatch(/not both/i);
+    expect(validateRoomCapture([video, video])).toBeUndefined();
+    expect(validateRoomCapture(Array.from({ length: 25 }, () => video))).toMatch(/24 video clips/);
   });
 
   it("rejects formats that the room service cannot process", () => {

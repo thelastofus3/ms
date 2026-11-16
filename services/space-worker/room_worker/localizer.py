@@ -357,11 +357,41 @@ def solve_pose(input_path, output_path):
         raise LocalizationError("The room matches did not produce a camera pose. Show a wider static room view and retry.")
     pose = result["cam_from_world"]
     inliers = np.asarray(result["inlier_mask"], dtype=bool)
-    camera_points = (np.asarray(pose.matrix())[:, :3] @ data["room_points"][inliers].T).T + np.asarray(pose.matrix())[:, 3]
-    if np.any(camera_points[:, 2] <= 0):
+    image_points, room_points = np.asarray(data["image_points"], dtype=float), np.asarray(data["room_points"], dtype=float)
+
+    def reprojection():
+        matrix = np.asarray(pose.matrix())
+        positions = room_points @ matrix[:, :3].T + matrix[:, 3]
+        with np.errstate(all="ignore"):
+            error = np.linalg.norm(np.asarray(camera.img_from_cam(positions)) - image_points, axis=1)
+        return positions[:, 2], np.where(np.isfinite(error), error, np.inf)
+
+    # RANSAC scores matches with an undistorted lens, so on a wide webcam (k1 about -0.3) it keeps the image centre only and a
+    # correct pose looked like 16 % support (2026-11-15). Refit the lens on a wider set, then count again at the strict limit
+    # until the set stops changing; the published inliers are always those within max_error of the final camera.
+    limit, settled, first = estimation.ransac.max_error, None, (pose, np.array(camera.params, dtype=float))
+    for widen in (3., 2., 1.5, 1., 1., 1., 1.):
+        depth, error = reprojection()
+        support = (depth > 0) & (error <= limit * widen)
+        if support.sum() < 12 or widen == 1. and settled is not None and np.array_equal(support, settled):
+            break
+        settled = support if widen == 1. else None
+        refined = pycolmap.refine_absolute_pose(pose, image_points, room_points, support, camera, refinement)
+        if refined is None:
+            break
+        pose = refined["cam_from_world"]
+    depth, error = reprojection()
+    polished = (depth > 0) & (error <= limit)
+    if polished.sum() >= inliers.sum():
+        inliers = polished
+    else:
+        # The wider refit lost support: publish the first solution unchanged.
+        pose = first[0]
+        camera.params = first[1]
+        depth, error = reprojection()
+    if np.any(depth[inliers] <= 0):
         raise LocalizationError("The matched room features fall behind the camera. Try a clearer room view.")
-    projected = np.asarray(camera.img_from_cam(camera_points))
-    errors = np.linalg.norm(projected - data["image_points"][inliers], axis=1)
+    errors = error[inliers]
     output = {"pose": np.asarray(pose.matrix()).tolist(), "params": camera.params.tolist(),
               "inliers": inliers.tolist(), "errors": errors.tolist()}
     Path(output_path).write_text(json.dumps(output))
@@ -480,7 +510,10 @@ def register_image(attempt, image_path, manifest, live_size, temporary, lease):
     lease.stage("match_room")
     # COLMAP 3.9 imports the entire list as one opaque block. Small explicit
     # batches expose actual completed work without guessing from elapsed time.
-    match_deadline = min(lease.deadline, time.monotonic() + 360)
+    # Classic matching gets a short budget and then hands over. On an 891-view room it spent all of its 360 s on 720 views and
+    # failed there, before the learned matcher (the one that locates webcams) could start (2026-11-15). Views are ranked, so
+    # the useful ones come first; a phone-like camera is solved within the first few dozen.
+    match_deadline = min(lease.deadline, time.monotonic() + 90)
     # Check after 4, 16, 48, 112, 240, ... views: a useful early opportunity,
     # without launching the CPU pose solver after every small batch. Failed
     # attempts share the matching deadline and each gets at most 15 seconds.
@@ -495,8 +528,8 @@ def register_image(attempt, image_path, manifest, live_size, temporary, lease):
         batch = reference_names[start:start + batch_size]
         (temporary / "pairs.txt").write_text("".join(f"{query_name} {name}\n" for name in batch))
         remaining = match_deadline - time.monotonic()
-        if remaining <= 0:
-            raise LocalizationError("Room matching took too long. Show more recognizable room background and retry.")
+        if remaining < 20:
+            break
         run_command(["colmap", "matches_importer", "--database_path", database, "--match_list_path", temporary / "pairs.txt",
                      # COLMAP 3.9 CPU guided matching uses several dense N*M
                      # matrices and does not cap them via max_num_matches.

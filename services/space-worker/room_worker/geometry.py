@@ -204,6 +204,73 @@ def select_room_model(sparse: Path, image_count: int, work: Path):
     return report
 
 
+def propose_floor(mesh, camera_poses, extent):
+    """Suggests a level floor; never silently treat a guessed plane as a reviewed floor."""
+    positions = np.array([c[:3, 3] for c in camera_poses])
+    mean_up = np.mean([-c[:3, 1] for c in camera_poses], axis=0)
+    mean_up /= max(np.linalg.norm(mean_up), 1e-9)
+    # People hold the phone level whatever they point it at, so every camera's right axis is horizontal and "up" is the one
+    # direction they all avoid. The largest RANSAC plane near the mean camera up was a slanted patch 16 degrees off (2026-11-15).
+    rights = np.array([c[:3, 0] for c in camera_poses])
+    spread, axes = np.linalg.eigh(rights.T @ rights)
+    up = axes[:, 0] * (1 if axes[:, 0] @ mean_up >= 0 else -1) if spread[0] < spread[1]*0.2 else mean_up
+    mesh.compute_triangle_normals()
+    cloud = mesh.sample_points_uniformly(100000, use_triangle_normal=True)
+    points, normals = np.asarray(cloud.points), np.asarray(cloud.normals)
+    def point(value):
+        return dict(zip(("x", "y", "z"), map(float, value)))
+    forward = camera_poses[0][:3, 2] - up * (up @ camera_poses[0][:3, 2])
+    if np.linalg.norm(forward) < 1e-6:
+        forward = np.cross(up, [1, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1])
+    # The floor is the lowest large level surface under the cameras; tables and beds are higher, the ceiling is above them.
+    level = points[np.abs(normals @ up) > 0.9]
+    heights = level @ up
+    below = heights < np.percentile(positions @ up, 5) - extent*0.005
+    step = extent / 100
+    normal, support = up, np.empty((0, 3))
+    if below.sum() >= 200:
+        counts, edges = np.histogram(heights[below], bins=max(1, int(np.ceil(np.ptp(heights[below])/step))))
+        counts = counts + np.append(counts[1:], 0)
+        first = int(np.argmax(counts >= counts.max()*0.35))
+        support = level[below & (heights >= edges[first]-step*0.5) & (heights <= edges[min(first+2, len(edges)-1)]+step*0.5)]
+    if len(support) < 200:
+        # No floor surface was reconstructed: still hand over a level frame under everything seen, to be reviewed by the user.
+        center = np.median(positions, axis=0)
+        center += up * (np.percentile(points @ up, 2) - center @ up)
+        forward /= np.linalg.norm(forward)
+        return {"normal": up.tolist(), "point": center.tolist(), "supportPoints": 0, "requiresReview": True,
+                "captureHeight": float(np.median((positions - center) @ up)),
+                "floorPoints": [point(center), point(center+forward*extent*0.1), point(center+np.cross(up, forward)*extent*0.1)]}
+    fitted = np.linalg.svd(support - support.mean(axis=0), full_matrices=False)[2][2]
+    fitted *= 1 if fitted @ up >= 0 else -1
+    if fitted @ up > 0.985:
+        normal = fitted
+    center = np.median(support, axis=0)
+    center += normal * (np.median(support @ normal) - center @ normal)
+    forward = forward - normal * (normal @ forward)
+    forward /= np.linalg.norm(forward)
+    right = np.cross(normal, forward)
+    coordinates = np.column_stack(((support-center) @ right, (support-center) @ forward))
+    low, high = np.percentile(coordinates, [2, 98], axis=0)
+    coordinates = coordinates[np.all((coordinates >= low) & (coordinates <= high), axis=1)]
+    # How high above the floor the camera was carried, in reconstruction units. A phone filming a room is held at about
+    # chest height, so this is a ruler that needs no tape measure: a room scaled from a distance the user entered 22 % short
+    # put avatars against the ceiling and every body-size estimate a metre off (2026-11-15).
+    floor = {"normal": normal.tolist(), "point": center.tolist(), "supportPoints": len(support), "requiresReview": True,
+             "captureHeight": float(np.median((positions - center) @ normal)),
+             "floorPoints": [point(center), point(center+forward*extent*0.1), point(center+right*extent*0.1)]}
+    from scipy.spatial import ConvexHull, QhullError
+    try:
+        vertices_2d = coordinates[ConvexHull(coordinates).vertices]
+        if len(vertices_2d) > 64:
+            vertices_2d = vertices_2d[np.linspace(0, len(vertices_2d)-1, 64).astype(int)]
+        floor.update(boundary=[point(center+right*x+forward*z) for x, z in vertices_2d], spawn=point(center))
+    except QhullError:
+        pass
+    return floor
+
+
+
 def build_collision(dense: Path, output: Path, report, lease):
     reconstruction = pycolmap.Reconstruction(str(dense / "sparse"))
     extent = report["extent"]
@@ -212,6 +279,11 @@ def build_collision(dense: Path, output: Path, report, lease):
                                                          color_type=o3d.pipelines.integration.TSDFVolumeColorType.NoColor)
     integrated = 0
     images = list(reconstruction.images.values())
+    # Depth speckles far outside the room each allocate a TSDF block: 891 views took 14.8 GB and the worker was OOM-killed
+    # (2.6 GB with this box). Keep only depth that lands inside the padded bounds of the sparse model.
+    points = np.array([point.xyz for point in reconstruction.points3D.values()])
+    low, high = np.percentile(points, [1, 99], axis=0)
+    low, high = low - (high-low)*0.1, high + (high-low)*0.1
     for index, image in enumerate(images):
         lease.check()
         lease.progress("Collision depths", "Integrating depth into collision surfaces", index, len(images), "depth views processed")
@@ -225,6 +297,11 @@ def build_collision(dense: Path, output: Path, report, lease):
         height, width = depth.shape
         k[0] *= width/camera.width
         k[1] *= height/camera.height
+        world = np.linalg.inv(pose(image))
+        ys, xs = np.mgrid[0:height, 0:width]
+        local = np.stack(((xs-k[0, 2])/k[0, 0]*depth, (ys-k[1, 2])/k[1, 1]*depth, depth), -1)
+        inside = local @ world[:3, :3].T + world[:3, 3]
+        depth[~np.all((inside >= low) & (inside <= high), -1)] = 0
         intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, k[0, 0], k[1, 1], k[0, 2], k[1, 2])
         blank = np.zeros((height, width, 3), dtype=np.uint8)
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(blank), o3d.geometry.Image(depth),
@@ -250,52 +327,8 @@ def build_collision(dense: Path, output: Path, report, lease):
         raise ValueError("Collision mesh is empty or invalid")
     scene = trimesh.Trimesh(vertices=vertices, faces=np.asarray(mesh.triangles), process=False)
     (output / "collision.glb").write_bytes(scene.export(file_type="glb"))
-    # Suggest a floor; never silently treat a guessed plane as a reviewed floor.
-    cloud = mesh.sample_points_uniformly(min(50000, len(mesh.triangles)*3))
-    camera_poses = [np.linalg.inv(pose(image)) for image in reconstruction.images.values()]
-    up = np.mean([-c[:3, 1] for c in camera_poses], axis=0)
-    up /= max(np.linalg.norm(up), 1e-9)
-    positions = np.array([c[:3, 3] for c in camera_poses])
-    floor = None
     lease.progress("Floor proposal", "Finding a possible floor and walking boundary", force=True)
-    for _ in range(6):
-        lease.check()
-        if len(cloud.points) < 100:
-            break
-        plane, inliers = cloud.segment_plane(distance_threshold=voxel*3, ransac_n=3, num_iterations=500)
-        normal = np.array(plane[:3]); d = plane[3]
-        if normal @ up < 0:
-            normal, d = -normal, -d
-        if normal @ up > 0.75 and np.median(positions @ normal+d) > extent*0.005:
-            support = np.asarray(cloud.points)[inliers]
-            center = np.median(support, axis=0)
-            center -= normal * (normal @ center+d)
-            forward = camera_poses[0][:3, 2].copy()
-            forward -= normal * (normal @ forward)
-            if np.linalg.norm(forward) < 1e-6:
-                forward = np.cross(normal, [1, 0, 0])
-                if np.linalg.norm(forward) < 1e-6:
-                    forward = np.cross(normal, [0, 0, 1])
-            forward /= np.linalg.norm(forward)
-            right = np.cross(normal, forward)
-            coordinates = np.column_stack(((support-center) @ right, (support-center) @ forward))
-            low, high = np.percentile(coordinates, [2, 98], axis=0)
-            coordinates = coordinates[np.all((coordinates >= low) & (coordinates <= high), axis=1)]
-            from scipy.spatial import ConvexHull, QhullError
-            try:
-                hull = ConvexHull(coordinates)
-                vertices_2d = coordinates[hull.vertices]
-                if len(vertices_2d) > 64:
-                    vertices_2d = vertices_2d[np.linspace(0, len(vertices_2d)-1, 64).astype(int)]
-                boundary = [center+right*x+forward*z for x, z in vertices_2d]
-                def point(value):
-                    return dict(zip(("x", "y", "z"), map(float, value)))
-                floor = {"normal": normal.tolist(), "point": center.tolist(), "supportPoints": len(inliers),
-                         "floorPoints": [point(center), point(center+forward*extent*0.1), point(center+right*extent*0.1)],
-                         "boundary": [point(p) for p in boundary], "spawn": point(center), "requiresReview": True}
-            except QhullError:
-                floor = {"normal": normal.tolist(), "point": center.tolist(), "supportPoints": len(inliers)}
-            break
-        cloud = cloud.select_by_index(inliers, invert=True)
+    lease.check()
+    floor = propose_floor(mesh, [np.linalg.inv(pose(image)) for image in reconstruction.images.values()], extent)
     return {"triangles": len(mesh.triangles), "integratedDepthViews": integrated, "floorProposal": floor,
             "voxelSizeInReconstructionUnits": voxel, "requiresReview": True}

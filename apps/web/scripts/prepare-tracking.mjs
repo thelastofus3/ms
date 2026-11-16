@@ -20,6 +20,12 @@ const models = [
 const digest = data => createHash("sha256").update(data).digest("hex");
 await mkdir(output, { recursive: true });
 await cp(wasm, `${output}wasm`, { recursive: true });
+// Face recognition (dlib ResNet descriptors via face-api) ships in its npm package; only the three models in use are served.
+const faceModels = fileURLToPath(new URL("../node_modules/@vladmandic/face-api/model/", import.meta.url));
+await mkdir(`${output}face`, { recursive: true });
+for (const model of ["ssd_mobilenetv1_model", "face_landmark_68_model", "face_recognition_model"])
+  for (const suffix of ["-weights_manifest.json", ".bin"]) await cp(`${faceModels}${model}${suffix}`, `${output}face/${model}${suffix}`);
+console.log("Tracking assets ready: face detection, landmark and recognition models");
 for (const specification of models) {
   const modelPath = `${output}${specification.file}`;
   let model;

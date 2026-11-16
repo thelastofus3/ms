@@ -80,9 +80,9 @@ def main():
         if found is not None:
             detections[image.name] = found
             cameras[image.name] = (model.cameras[image.camera_id], np.asarray(image.cam_from_world.matrix()))
-        progress(0.8 * (index + 1) / len(images), f"Body landmarks found in {len(detections)}/{index + 1} photos")
+        progress(0.8 * (index + 1) / len(images), f"Body landmarks found in {len(detections)}/{index + 1} views")
     if len(detections) < 6:
-        print("ERROR The body pose could not be detected in enough photos. Show the whole body in every photo.", flush=True)
+        print("ERROR The body pose could not be detected in enough views. Keep the whole body in the frame.", flush=True)
         sys.exit(1)
     # Pixel tolerance scales with the person's size in the images.
     height = np.median([d[:, 1].max() - d[:, 1].min() for d in detections.values()])
@@ -132,7 +132,7 @@ def main():
               "thresholdPx": threshold, "medianErrorPx": float(np.median(errors))}
     (WORK / "skeleton.json").write_text(json.dumps(report, indent=1))
     print(json.dumps({k: v for k, v in report.items() if k not in ("landmarks", "quality")}, indent=1))
-    progress(1.0, f"{len(points)}/33 body points in 3D from {len(detections)} photos, median error {report['medianErrorPx']:.1f} px "
+    progress(1.0, f"{len(points)}/33 body points in 3D from {len(detections)} views, median error {report['medianErrorPx']:.1f} px "
              f"({len(report['swappedViews'])} back views relabelled)", points=len(points), medianErrorPx=round(report["medianErrorPx"], 2))
 
 

@@ -7,6 +7,7 @@ import { calibrationFromManifest, distance, draftKey, floorFrame, freshCalibrati
 import { validatePlyUpload, validateRoomCapture } from "./uploadValidation";
 import { AccountQuota } from "./AccountQuota";
 import { RoomIllustration } from "../Icon";
+import { FilePicker } from "../FilePicker";
 import "./style.css";
 
 const stages = [
@@ -24,14 +25,17 @@ function JobProgress({ job }: { job: Job }) {
   const observation = job.diagnostics?.liveProgress as LiveProgress | undefined;
   const live = observation?.stage === job.stage ? observation : undefined;
   const percent = live ? live.percent : job.progress > 0 ? job.progress : null;
-  const duration = (seconds: number) => `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const duration = (seconds: number) => seconds >= 3600 ? `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  // Linear estimate for the running operation only; shown once enough of it is done to be meaningful.
+  const remaining = live && percent !== null && percent >= 3 && percent < 100 && live.elapsedSeconds >= 60 && live.label !== "Camera coverage" ? Math.round(live.elapsedSeconds * (100 - percent) / percent) : null;
   const counter = (value: number) => live?.unit?.startsWith("bytes") ? `${(value / (1024 * 1024)).toFixed(1)} MiB` : value.toLocaleString("en-US");
   return <div className="room-job-progress" aria-live="polite">
-    {job.state === "QUEUED" && <p>Capture saved. Waiting for a GPU worker to claim this job.</p>}
+    {job.state === "QUEUED" && <p>Capture saved. It starts as soon as the graphics card is free; other reconstructions and avatar builds run first. You can close this page.</p>}
+    {job.state === "RUNNING" && <p className="room-help">A room takes from about an hour to many hours, depending on the length of the video. It keeps running if you close this page.</p>}
     {job.state === "RUNNING" && <><p><strong>{stages[current]?.[1] || job.stage}</strong> · Step {Math.max(1, current + 1)} of {stages.length}</p>
       <progress max={100} value={percent ?? undefined} aria-label={`${live?.label || stages[current]?.[1] || job.stage} progress`} />
       {live ? <><p><strong>{live.label}{percent !== null ? ` · ${percent}%` : ""}</strong>{live.total ? ` · ${counter(live.completed ?? 0)} / ${counter(live.total)} ${live.unit?.replace(/^bytes /, "") ?? ""}` : ""}</p>
-        <p>{live.activity} · Elapsed: {duration(live.elapsedSeconds)}</p>
+        <p>{live.activity} · Elapsed: {duration(live.elapsedSeconds)}{remaining !== null ? ` · About ${duration(Math.ceil(remaining / 60) * 60).replace(/ 0s$/, "")} left in this step` : ""}</p>
         {percent === null && <p className="room-help">This operation does not expose a measurable completion percentage.</p>}
         {live.label === "Camera coverage" && <p className="room-help">Coverage of the current camera solution; it can change as different candidates are tried. It does not measure time remaining.</p>}
         {percent !== null && live.label !== "Camera coverage" && <p className="room-help">Percentage measures the current operation. It starts again when the next operation begins.</p>}
@@ -184,6 +188,15 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); setQuotaRevision(value => value + 1); }
   };
+  const resume = async (job: Job) => {
+    setLoading(true); setError("");
+    try {
+      const result = await api.resume(job.id);
+      setJobs(current => current.map(j => j.id === result.id ? result : j));
+      setStatus("Reconstruction continues from its saved steps.");
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); setQuotaRevision(value => value + 1); }
+  };
   const open = async (job: Job) => {
     if (job.kind === "splat" || job.state === "IMPORTED") { location.hash = `room-viewer?job=${job.id}`; return; }
     if (!job.manifestUrl || !viewer.current) return;
@@ -249,7 +262,7 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
   };
   const pickHint = selection === "floor-height" ? "Click a real floor surface to set its height · tilt and dimensions stay unchanged" : selection === "measurement" ? calibration.measurement.length === 2 && pointTarget === null ? "Reference selected · adjust A/B below, then enter its real distance" : `Click endpoint ${(pointTarget ?? calibration.measurement.length) === 0 ? "A" : "B"} of your measured distance` : selection === "floor" ? pointTarget !== null || calibration.floor.length < 3 ? `Click floor point ${(pointTarget ?? calibration.floor.length) + 1}` : "Check the floor grid · adjust its height and tilt below" : selection === "boundary" ? pointTarget !== null ? `Click to move floor corner ${pointTarget + 1}` : "Click around the walking area · corners snap to floor" : selection === "spawn" ? "Click an open floor location to place the start marker" : selection === "dimension" ? pendingBox ? "Pick the second end of this ruler" : "Pick the first end of a new ruler" : selection === "obstacle" ? pendingBox ? "Pick the opposite upper corner" : "Pick a lower obstacle corner" : "Inspect the floor and collisions before saving";
   return <main className="room-studio">
-    <header className="room-heading"><div><p className="eyebrow">DIGITAL ROOM</p><h1>{captureAllowed ? "Walk through your real room" : "Import Gaussian PLY scenes"}</h1><p>{captureAllowed ? "Turn overlapping photos or a video into a photorealistic 3D space, or import an existing Gaussian PLY." : "Upload an existing scene and explore it with orbit controls."}</p></div></header>
+    <header className="room-heading"><div><h1>{captureAllowed ? "Walk through your real room" : "Import Gaussian PLY scenes"}</h1><p>{captureAllowed ? "Turn overlapping photos or a video into a photorealistic 3D space, or import an existing Gaussian PLY." : "Upload an existing scene and explore it with orbit controls."}</p></div></header>
     {service && <p className="room-notice" role="status">{service} Status reconnects automatically.</p>}
     {error && <p className="room-error" role="alert">{error}</p>}
     <nav className="room-library-tabs" aria-label="Room workspace"><button aria-pressed={panel === "library"} onClick={() => setPanel("library")}>Room library</button>{captureAllowed && <button disabled={busy} aria-pressed={panel === "capture"} onClick={() => { setPanel("capture"); setFiles([]); }}>+ New capture</button>}<button disabled={busy} aria-pressed={panel === "splat"} onClick={() => { setPanel("splat"); setFiles([]); }}>Import PLY</button></nav>
@@ -260,10 +273,10 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
         <div hidden={panel !== "splat"}>
           <h2>Import Gaussian PLY</h2><p>Open a Gaussian scene directly. Imported scenes support orbit viewing and do not include metric scale or walking collision surfaces.</p>
           <label>Scene name<input value={name} maxLength={100} disabled={busy} onChange={e => setName(e.target.value)} /></label>
-          <label>Gaussian PLY file<input type="file" accept=".ply" disabled={busy} aria-invalid={!!files.length && !!splatError} onChange={e => { const selectedFiles = Array.from(e.target.files || []); if (selectedFiles.length) { setFiles(selectedFiles); setError(""); } }} /></label>
+          <label>Gaussian PLY file<FilePicker files={files} accept=".ply" disabled={busy} aria-invalid={!!files.length && !!splatError} onChange={e => { const selectedFiles = Array.from(e.target.files || []); if (selectedFiles.length) { setFiles(selectedFiles); setError(""); } }} /></label>
           <p className="room-help">One binary little-endian Gaussian PLY, up to 1 GiB and 2,500,000 vertices. The server validates its properties and values before publication.</p>
           {!!files.length && splatError && <p className="room-error" role="alert">{splatError}</p>}
-          <button disabled={busy || !!service || !!splatError || !name.trim()} onClick={() => void capture("splat")}>Upload and import PLY</button>
+          <button className="room-primary" disabled={busy || !!service || !!splatError || !name.trim()} onClick={() => void capture("splat")}>Upload and import PLY</button>
           {busy && <><progress max={100} value={uploadPhase.startsWith("Uploading") ? uploadPercent : undefined} aria-label="PLY upload progress" /><p role="status">{uploadPhase}{uploadPhase.startsWith("Uploading") ? ` ${uploadPercent.toFixed(0)}%` : ""}</p><button onClick={() => uploadController.current?.abort()}>Pause upload</button></>}
         </div>
         {captureAllowed && <div hidden={panel !== "capture"}>
@@ -271,12 +284,12 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
         <p>Walk slowly around one static room. Keep overlapping views, revisit earlier viewpoints, and record the floor and obstacles. Moving the camera is essential.</p>
         <p className="room-help">Change your position, not just the viewing angle. A longer video from one fixed spot cannot provide reliable depth for walking or collisions. Keep the same lens, avoid zooming, and move slowly between viewpoints. Longer videos receive a larger frame budget, up to the profile limit.</p>
         <label>Room name<input value={name} maxLength={100} disabled={busy} onChange={e => setName(e.target.value)} /></label>
-        <label>Photos or video<input type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm" disabled={busy} aria-invalid={!!files.length && !!captureError} aria-describedby={files.length && captureError ? "room-capture-error" : "room-capture-limits"} onChange={e => { const selectedFiles = Array.from(e.target.files || []); if (selectedFiles.length) { setFiles(selectedFiles); setError(""); } }} /></label>
-        <p>{files.length ? `${files.length} file${files.length > 1 ? "s" : ""} · ${(files.reduce((n, f) => n + f.size, 0) / 1024 ** 2).toFixed(1)} MiB` : "12–500 photos, or one video up to 5 minutes."}</p>
+        <label>Photos or video clips<FilePicker files={files} multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm" disabled={busy} aria-invalid={!!files.length && !!captureError} aria-describedby={files.length && captureError ? "room-capture-error" : "room-capture-limits"} onChange={e => { const selectedFiles = Array.from(e.target.files || []); if (selectedFiles.length) { setFiles(selectedFiles); setError(""); } }} /></label>
+        <p>{files.length ? `${files.length} file${files.length > 1 ? "s" : ""} · ${(files.reduce((n, f) => n + f.size, 0) / 1024 ** 2).toFixed(1)} MiB` : "12–500 photos, or 1–24 video clips of the same room (up to 20 minutes together)."}</p>
         {!!files.length && captureError && <p className="room-error" id="room-capture-error" role="alert">{captureError}</p>}
-        <p className="room-help" id="room-capture-limits">JPEG, PNG or WebP photos: 12–500 files, up to 25 MiB each and 3 GiB total. One MP4, MOV or WebM video: up to 2 GiB.</p>
-        <label>Detail<select value={profile} disabled={busy} onChange={e => setProfile(e.target.value)}><option value="local">Standard · smaller GPU</option><option value="quality">High · more GPU memory</option></select></label>
-        <button disabled={busy || !!service || !!captureError || !name.trim()} onClick={() => void capture()}>Upload and reconstruct</button>
+        <p className="room-help" id="room-capture-limits">JPEG, PNG or WebP photos: 12–500 files, up to 25 MiB each and 3 GiB total. MP4, MOV or WebM video: 1–24 clips, up to 2 GiB each and 3 GiB together, 20 minutes in total. Record every clip with the same phone, orientation and zoom, and let each clip show something an earlier one already showed.</p>
+        <label>Detail<select value={profile} disabled={busy} onChange={e => setProfile(e.target.value)}><option value="local">Standard · about 1–3 hours</option><option value="quality">High · sharper, can take 10+ hours for long videos</option></select></label>
+        <button className="room-primary" disabled={busy || !!service || !!captureError || !name.trim()} onClick={() => void capture()}>Upload and reconstruct</button>
         {busy && <><progress max={100} value={uploadPhase === "Uploading capture…" ? uploadPercent : undefined} aria-label="Upload progress" /><p role="status">{uploadPhase}{uploadPhase === "Uploading capture…" ? ` ${uploadPercent.toFixed(0)}%` : ""}</p><button onClick={() => uploadController.current?.abort()}>Pause upload</button></>}
         <p className="room-help">A normal video does not supply real-world scale. Keep a tape-measured distance for calibration. Mirrors, glass and blank walls can cause gaps.</p>
         </div>}
@@ -310,11 +323,12 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
       </aside>
       <section className="room-workspace">
         {selectedJob && <section className="room-selected-job">
-          <div className="room-selected-heading"><div><p className="eyebrow">SELECTED ROOM</p><h2>{selectedJob.name}</h2></div><span className="room-state" data-state={selectedJob.state}>{stateLabel(selectedJob.state)}</span></div>
+          <div className="room-selected-heading"><div><p className="eyebrow">Selected room</p><h2>{selectedJob.name}</h2></div><span className="room-state" data-state={selectedJob.state}>{stateLabel(selectedJob.state)}</span></div>
           {!scene && <JobProgress job={selectedJob} />}
           {selectedJob.error && <p className="room-error" role="alert">{selectedJob.error}</p>}
           {["QUEUED", "RUNNING"].includes(selectedJob.state) && <button disabled={selectedJob.cancel_requested} onClick={() => { void api.cancel(selectedJob.id).then(result => { setJobs(current => current.map(job => job.id === result.id ? result : job)); }).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setQuotaRevision(value => value + 1)); }}>{selectedJob.cancel_requested ? "Cancellation requested" : selectedJob.kind === "splat" ? "Cancel import" : "Cancel reconstruction"}</button>}
-          {captureAllowed && selectedJob.kind !== "splat" && selectedJob.state !== "IMPORTED" && !["QUEUED", "RUNNING"].includes(selectedJob.state) && <><button disabled={loading || busy || !!service} onClick={() => void reconstructAgain(selectedJob)}>Reconstruct again</button><p className="room-help">Uses the saved photos or video with the current pipeline and creates a separate result. The new scene needs its own scale and floor setup.</p></>}
+          {captureAllowed && selectedJob.kind !== "splat" && selectedJob.state === "FAILED" && <><button className="room-primary" disabled={loading || busy || !!service} onClick={() => void resume(selectedJob)}>Continue reconstruction</button><p className="room-help">Picks up from the steps that already finished (cameras, depth, training checkpoints) instead of starting over. If it stops at the same place again, the capture itself needs changing: see the message above.</p></>}
+          {captureAllowed && selectedJob.kind !== "splat" && selectedJob.state !== "IMPORTED" && !["QUEUED", "RUNNING"].includes(selectedJob.state) && <><button disabled={loading || busy || !!service} onClick={() => void reconstructAgain(selectedJob)}>{selectedJob.state === "FAILED" ? "Start over from the upload" : "Reconstruct again"}</button><p className="room-help">Uses the saved photos or video with the current pipeline and creates a separate result. The new scene needs its own scale and floor setup.</p></>}
           {selectedJob.manifestUrl && !scene && <button disabled={loading} onClick={() => void open(selectedJob)}>{loading ? "Opening room…" : selectedJob.kind === "splat" ? "Open imported scene" : "Open reconstructed room"}</button>}
         </section>}
         <div className={`room-view${scene ? "" : " room-view-empty"}`} style={{ visibility: scene ? "visible" : "hidden" }} ref={host} />
@@ -329,7 +343,7 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
           <label><input type="checkbox" checked={overlay} disabled={!scene || loading} onChange={e => { setOverlay(e.target.checked); viewer.current?.showCollision(e.target.checked); }} /> Show collision surfaces</label>
           {dirty && scene?.ready && <p className="room-help">Save the edited dimensions and orientation before walking.</p>}
         </div>
-        {!scene && !selectedJob && <div className="room-empty"><RoomIllustration /><p className="eyebrow">A NEW PERSPECTIVE</p><h2>{captureAllowed ? "Your capture becomes the scene" : "Explore an imported scene"}</h2><p>Choose a saved scene or upload a new input. Its progress and scene will appear here.</p><button className="room-primary" onClick={() => setPanel(captureAllowed ? "capture" : "splat")}>{captureAllowed ? "+ New capture" : "Import PLY"}</button></div>}
+        {!scene && !selectedJob && <div className="room-empty"><RoomIllustration /><h2>{captureAllowed ? "Your capture becomes the scene" : "Explore an imported scene"}</h2><p>Choose a saved scene or upload a new input. Its progress and scene will appear here.</p><button className="room-primary" onClick={() => setPanel(captureAllowed ? "capture" : "splat")}>{captureAllowed ? "+ New capture" : "Import PLY"}</button></div>}
         {scene && <CalibrationPanel scene={scene} calibration={calibration} tool={selection} target={pointTarget} pending={pendingBox} canUndo={canUndo} draftSaved={draftSaved} loading={loading} dirty={dirty}
           onChange={setCalibration} onTool={setMode} onUndo={undo} onClear={clearTool} onSuggestedFloor={useFloorProposal}
           onTop={() => { inspect(); viewer.current?.topView(); }} onForward={useViewForward} onPublish={() => void publish()} />}

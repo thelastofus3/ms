@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import * as api from "./api";
 
-const gib = (bytes: number) => `${(bytes / 1024 ** 3).toLocaleString(undefined, { maximumFractionDigits: 2 })} GiB`;
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toLocaleString("en-US", { maximumFractionDigits: 2 })} GiB`;
 const date = (value: string) => new Date(value).toLocaleString("en-US");
 
 export function AccountQuota({ revision, uploading }: { revision: number; uploading: boolean }) {

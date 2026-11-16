@@ -6,6 +6,7 @@ Layout (shared `avatar-photos` volume, written by photo_api):
   /data/<owner>/<capture>/cancel-request   created by the API to cancel
   /data/<owner>/<capture>/work/            stage outputs + job.log
 """
+import fcntl
 import json
 import logging
 import os
@@ -132,13 +133,25 @@ def main():
         job.update(state="failed", error="The avatar worker restarted during processing. Start the job again.", finishedAt=now())
         write(path, job)
     LOGGER.info("Avatar worker ready; waiting for photo sets in %s", DATA)
+    # Shared with the room worker: one heavy job at a time on the single graphics card (see compose gpu-lock).
+    gpu = open("/gpu-lock/gpu.lock", "a") if os.path.isdir("/gpu-lock") else None
     while True:
         queued = jobs("queued")
-        if queued:
+        if not queued:
+            time.sleep(3)
+            continue
+        if gpu:
+            try:
+                fcntl.flock(gpu, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                time.sleep(5)
+                continue
+        try:
             _, path, job = queued[0]
             process(path, job)
-        else:
-            time.sleep(3)
+        finally:
+            if gpu:
+                fcntl.flock(gpu, fcntl.LOCK_UN)
 
 
 if __name__ == "__main__":

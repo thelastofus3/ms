@@ -68,8 +68,9 @@ public class RoomController {
             if(f.size()>(video ? 2L*1024*1024*1024 : 25L*1024*1024)) throw new IllegalArgumentException("File exceeds upload limit");
             total+=f.size(); if(video) videos++;
         }
-        if(total>3L*1024*1024*1024 || (videos>0 && body.files().size()!=1)) throw new IllegalArgumentException("Upload one video or up to 500 photos, at most 3 GiB total");
-        if(videos==0 && body.files().size()<12) throw new IllegalArgumentException("Upload at least 12 overlapping photos or one video");
+        // Several clips of one room are solved together; the worker links them by revisit matching.
+        if(total>3L*1024*1024*1024 || (videos>0 && (videos!=body.files().size() || videos>24))) throw new IllegalArgumentException("Upload up to 24 video clips or up to 500 photos, at most 3 GiB total");
+        if(videos==0 && body.files().size()<12) throw new IllegalArgumentException("Upload at least 12 overlapping photos or a video");
         }
         return tx.execute(status -> {
         quota.lockOwner(owner(request)); quota.checkPendingLocked(owner(request));
@@ -221,6 +222,23 @@ public class RoomController {
         if(Set.of("QUEUED","RUNNING").contains(source.get("state"))) throw new ResponseStatusException(HttpStatus.CONFLICT,"Wait for this reconstruction to finish or cancel it first");
         String key="reconstruct:"+id+":"+body.idempotencyKey();
         return create(new JobRequest((UUID)source.get("upload_id"),source.get("name").toString(),source.get("profile").toString(),key),request);
+    }
+    // Same job and upload: the worker reuses this job's saved cameras, depth maps and trainer checkpoints.
+    @PostMapping("/jobs/{id}/resume")
+    public Map<String,Object> resumeJob(@PathVariable UUID id,HttpServletRequest request) {
+        AuthService.requireCaptureUpload(request);
+        quota.prepareOwner(owner(request));
+        return tx.execute(status -> {
+            String owner=owner(request);
+            quota.lockOwner(owner);
+            var row=owned("room_jobs",id,owner,true);
+            if(kind(row).equals("splat")) throw new ResponseStatusException(HttpStatus.CONFLICT,"Imported PLY scenes cannot be continued; upload the PLY again");
+            if(!"FAILED".equals(row.get("state"))) throw new ResponseStatusException(HttpStatus.CONFLICT,"Only a failed reconstruction can be continued");
+            quota.ensureAvailable(owned("room_uploads",(UUID)row.get("upload_id"),owner,true));
+            quota.checkActiveLocked(owner);
+            db.update("UPDATE room_jobs SET state='QUEUED',stage='queued',progress=0,error=NULL,attempts=0,cancel_requested=false,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=?",id);
+            return view(owned("room_jobs",id,owner,false));
+        });
     }
     @GetMapping("/jobs/{id}")
     public Map<String,Object> job(@PathVariable UUID id,HttpServletRequest request) { return view(owned("room_jobs",id,owner(request),false)); }

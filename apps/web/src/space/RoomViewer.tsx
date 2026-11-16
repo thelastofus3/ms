@@ -4,6 +4,7 @@ import { RoomRenderer } from "./renderer";
 import type { Job, RoomManifest } from "./types";
 import * as trackingApi from "./tracking/api";
 import { PeopleAvatarPicker } from "./PeopleAvatarPicker";
+import { PeopleFusion, sharedPeople, type CameraObservation } from "./tracking/fusion";
 import type { CameraCalibration, LiveCameraState, TrackingSnapshot, WorldPerson } from "./tracking/types";
 import "./style.css";
 import "./viewer.css";
@@ -15,6 +16,8 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
   const [walking, setWalking] = useState(false), [fullscreen, setFullscreen] = useState(false), [live, setLive] = useState(true);
   const [people, setPeople] = useState<WorldPerson[]>([]), [cameraCount, setCameraCount] = useState(0), [trackingError, setTrackingError] = useState("");
   const [cameras, setCameras] = useState<CameraCalibration[]>([]), [referenceCamera, setReferenceCamera] = useState("");
+  const fusion = useRef(new PeopleFusion()), camerasRef = useRef<CameraCalibration[]>([]);
+  camerasRef.current = cameras;
   const [showReferences, setShowReferences] = useState(true);
   const [showCameraPositions, setShowCameraPositions] = useState(true);
   useEffect(() => {
@@ -69,31 +72,44 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
     renderer.current?.markFloorReferences(showReferences ? cameras.find(camera => camera.id === referenceCamera)?.points.map(pair => pair.world) ?? [] : []);
   }, [cameras, referenceCamera, showReferences, scene]);
   useEffect(() => {
-    renderer.current?.setPeople([]); setPeople([]); setCameraCount(0); setTrackingError("");
+    renderer.current?.setPeople([]); setPeople([]); setCameraCount(0); setTrackingError(""); fusion.current.reset();
     if (!scene || !live || scene.sourceType === "gaussian-ply") return;
     let active = true, timer: ReturnType<typeof setTimeout> | undefined, lastSuccess = Date.now();
     const controller = new AbortController();
+    let remote: CameraObservation[] = [], failure = "";
+    // Cameras running in this browser are read directly: fresher than the server's copy, and they carry the body pose
+    // that makes an avatar repeat the person's movement. A failed request no longer wipes everyone off the room.
+    const show = () => {
+      if (!active) return;
+      const now = Date.now(), local = sharedPeople(jobId).observations(now), seen = [...local, ...remote.filter(camera => camera.expiresAt > now && !local.some(own => own.cameraId === camera.cameraId))];
+      // One marker per person: cameras that see the same person are combined where their views cross.
+      const observations = fusion.current.update(seen, now);
+      renderer.current?.setPeople(observations); setPeople(observations); setCameraCount(seen.length); setTrackingError(seen.length ? "" : failure);
+    };
+    // Shown the moment a camera here has a new frame, not at the next quarter-second poll.
+    const unsubscribe = sharedPeople(jobId).subscribe(show);
     const poll = async () => {
       const started = Date.now();
+      failure = "";
       try {
         const snapshot = await api.request<TrackingSnapshot>(`/v1/rooms/jobs/${jobId}/tracking?sceneVersion=${scene.version}`, undefined, controller.signal);
         if (!active) return;
-        const now = Date.now(), delay = now - started;
-        const observations: WorldPerson[] = snapshot.cameras.flatMap(camera => camera.people.map(person => ({
-          id: `${camera.cameraId}:${camera.streamId}:${person.id}`, label: `Human ${person.id} - ${camera.name}${person.positionMethod === "estimated" ? ` - Estimated +/- ${(person.uncertaintyMeters ?? 0).toFixed(1)} m` : ""}`,
-          position: person.position, confidence: person.confidence, expiresAt: now + Math.max(0, 1500 - camera.ageMs - delay),
-          positionMethod: person.positionMethod, uncertaintyMeters: person.uncertaintyMeters,
-        }))).filter(person => person.expiresAt > now);
-        renderer.current?.setPeople(observations); setPeople(observations); setCameraCount(snapshot.cameras.length); setTrackingError(""); lastSuccess = now;
-      } catch (e) { if (active) { renderer.current?.setPeople([]); setPeople([]); setCameraCount(0); setTrackingError(e instanceof Error ? e.message : String(e)); } }
-      finally { if (active) timer = setTimeout(() => void poll(), 250); }
+        const delay = Date.now() - started;
+        remote = snapshot.cameras.map(camera => {
+          const center = camerasRef.current.find(saved => saved.id === camera.cameraId)?.geometry?.center;
+          return { cameraId: camera.cameraId, name: camera.name, people: camera.people, expiresAt: Date.now() + Math.max(0, 3000 - camera.ageMs - delay), center: center && { x: center.x, z: center.z }, height: center && center.y - (scene.navigation?.floorY ?? 0) };
+        });
+        lastSuccess = Date.now();
+      } catch (e) { if (!active) return; failure = e instanceof Error ? e.message : String(e); }
+      show();
+      if (active) timer = setTimeout(() => void poll(), 250);
     };
     void poll();
     const expiry = setInterval(() => {
       setPeople(current => current.some(person => person.expiresAt <= Date.now()) ? current.filter(person => person.expiresAt > Date.now()) : current);
-      if (Date.now() - lastSuccess >= 1500) setCameraCount(0);
+      if (Date.now() - lastSuccess >= 3000 && !sharedPeople(jobId).observations(Date.now()).length) setCameraCount(0);
     }, 200);
-    return () => { active = false; controller.abort(); clearTimeout(timer); clearInterval(expiry); renderer.current?.setPeople([]); };
+    return () => { active = false; unsubscribe(); controller.abort(); clearTimeout(timer); clearInterval(expiry); renderer.current?.setPeople([]); };
   }, [scene, live, jobId]);
   const walk = async () => {
     try { setError(""); await renderer.current?.walk(); setWalking(true); }
@@ -126,13 +142,13 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
     : cameraCount ? "A camera is live, but has no usable human positions yet. Open its Camera controls to see the positioning reason."
     : cameras.length ? "Camera calibration is saved. Start its camera and confirm it is still fixed to display live human positions."
     : "Connect and automatically locate a fixed camera to display live human positions.";
-  if (!jobId) return <main className="room-studio room-viewer-library"><header className="room-heading"><div><p className="eyebrow">ROOM VIEWER</p><h1>Explore a room</h1><p>Choose a calibrated room to walk through, or an imported PLY scene to orbit.</p></div></header>
+  if (!jobId) return <main className="room-studio room-viewer-library"><header className="room-heading"><div><p className="eyebrow">Room viewer</p><h1>Explore a room</h1><p>Choose a calibrated room to walk through, or an imported PLY scene to orbit.</p></div></header>
     {loading && <p role="status">Loading your rooms…</p>}{error && <p className="room-error" role="alert">{error}</p>}
     <div className="room-viewer-choices">{rooms.map(job => <a key={job.id} href={`#room-viewer?job=${job.id}`}><strong>{job.name}</strong><span>Open viewer →</span></a>)}</div>
     {!loading && !rooms.length && <p>No viewable scenes yet. <a href="#rooms">Open room reconstruction</a> to finish setup.</p>}
   </main>;
   return <main className="room-studio room-viewer-page">
-    <header className="room-viewer-heading"><div><p className="eyebrow">ROOM VIEWER</p><h1>{room?.name || "Your room"}</h1><p>{imported ? "Drag to orbit · Right-drag to pan · Scroll to zoom" : "WASD to move · Mouse to look · Escape releases the mouse"}</p></div>{!imported && <div className="room-tool-actions"><a href={`#rooms?job=${jobId}`}>Edit room setup</a><a href={`#room-tracking?job=${jobId}`}>Set up live cameras</a></div>}</header>
+    <header className="room-viewer-heading"><div><p className="eyebrow">Room viewer</p><h1>{room?.name || "Your room"}</h1><p>{imported ? "Drag to orbit · Right-drag to pan · Scroll to zoom" : "WASD to move · Mouse to look · Escape releases the mouse"}</p></div>{!imported && <div className="room-tool-actions"><a href={`#rooms?job=${jobId}`}>Edit room setup</a><a href={`#room-tracking?job=${jobId}`}>Set up live cameras</a></div>}</header>
     <section className="room-explorer" ref={container} aria-label={imported ? "Imported PLY orbit viewer" : "Room walking viewer"}>
       <div className="room-explorer-canvas" ref={host} />
       <div className="room-explorer-toolbar">
@@ -149,6 +165,6 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
     {!loading && scene && !imported && <div className="room-viewer-camera-status" role="status"><p>{liveStatus}</p><a href={`#room-tracking?job=${jobId}`}>Camera controls</a>{local?.cameraRunning && stopCamera && <button onClick={stopCamera}>Stop camera</button>}</div>}
     {cameras.some(camera => camera.geometry) && <div className="room-viewer-reference-controls"><label><input type="checkbox" checked={showCameraPositions} onChange={e => setShowCameraPositions(e.target.checked)} /> Show camera positions</label><span>Blue cameras show their saved location and viewing direction. Green and amber markers show people.</span></div>}
     {!!referenceCameras.length && <div className="room-viewer-reference-controls"><label><input type="checkbox" checked={showReferences} onChange={e => setShowReferences(e.target.checked)} /> Show manual camera floor matches</label>{referenceCameras.length > 1 && <select aria-label="Camera floor matches" value={referenceCamera} onChange={e => setReferenceCamera(e.target.value)}>{referenceCameras.map(camera => <option key={camera.id} value={camera.id}>{camera.name}</option>)}</select>}<span>The gold reference points calibrate a camera. They do not mark a person.</span></div>}
-    {!imported && <p className="room-help">Your started camera keeps tracking while you use this viewer. Green markers use visible feet on the floor; amber body-depth estimates use assumed adult body dimensions and show uncertainty. Labels are anonymous tracks, not identity recognition. Stop camera or close this tab to end capture; stale detections disappear automatically.</p>}
+    {!imported && <p className="room-help">Your started camera keeps tracking while you use this viewer. Green markers use visible feet on the floor; amber body-depth estimates use assumed adult body dimensions and show uncertainty. A person seen by several cameras is one marker, placed where their views cross. People recognized by face in Live cameras wear their own avatar; everyone else is an anonymous track. Stop camera or close this tab to end capture; stale detections disappear automatically.</p>}
   </main>;
 }

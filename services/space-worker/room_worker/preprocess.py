@@ -18,6 +18,7 @@ class Frame:
     sharpness: float
     path: Path
     gray: np.ndarray
+    clip: int = 0
 
 
 def video_frame_budget(duration, profile):
@@ -53,7 +54,7 @@ def select_video_frames(candidates, budget, lease=None):
     for frame in candidates:
         if frame.sharpness < 12:
             continue
-        if usable and np.mean(cv2.absdiff(frame.gray, usable[-1].gray)) < 1.5:
+        if usable and usable[-1].clip == frame.clip and np.mean(cv2.absdiff(frame.gray, usable[-1].gray)) < 1.5:
             continue
         usable.append(frame)
     # Reserve space for bridging views instead of spending the entire budget
@@ -73,6 +74,8 @@ def select_video_frames(candidates, budget, lease=None):
                 lease.progress("Select frames", f"Checking overlap between candidate views · {checks} pairs checked")
             cache[key] = view_overlap(a.gray, b.gray)
             checks += 1
+        if a.clip != b.clip:
+            return False  # Separate clips are linked by revisit matching, not by frames in between.
         coverage, displacement = cache[key]
         return coverage < 0.65 or displacement > min(a.gray.shape) * 0.08
     while len(selected) < budget:
@@ -115,19 +118,38 @@ def prepare(media, storage, work: Path, profile, lease):
     video = media[0]["contentType"].startswith("video/")
     budget = profile["frames"]
     capture = {}
+    clips = {}
     if video:
-        duration = inspect_video(files[0])
+        if not all(item["contentType"].startswith("video/") for item in media):
+            raise ValueError("Upload either video clips or photos, not both")
+        durations = [inspect_video(path) for path in files]
+        duration = sum(durations)
+        if duration > 1200:
+            raise ValueError(f"The clips are {duration / 60:.0f} minutes long together; the limit is 20 minutes. Remove some clips.")
         budget = video_frame_budget(duration, profile)
         capture["videoDurationSeconds"] = duration
+        capture["videoClips"] = len(files)
         capture["frameBudget"] = budget
         frames = work / "frames"
         frames.mkdir()
         resolution = profile["resolution"]
         fps = min(4, (budget * 4) / duration)
-        lease.progress("Decode video", "Extracting video frames", 0, duration, "video seconds decoded", force=True)
-        run(["ffmpeg", "-v", "error", "-nostdin", "-i", files[0], "-an", "-vf",
-             f"fps={fps},scale={resolution}:{resolution}:force_original_aspect_ratio=decrease",
-             "-frames:v", budget*4, "-progress", work / "decode-progress.txt", "-q:v", "2", frames / "%05d.jpg"], work, lease, 600)
+        sizes = set()
+        for clip, (source, seconds) in enumerate(zip(files, durations)):
+            lease.progress("Decode video", f"Extracting frames from clip {clip + 1} of {len(files)}" if len(files) > 1 else "Extracting video frames",
+                           0, seconds, "video seconds decoded", force=True)
+            run(["ffmpeg", "-v", "error", "-nostdin", "-i", source, "-an", "-vf",
+                 f"fps={fps},scale={resolution}:{resolution}:force_original_aspect_ratio=decrease",
+                 "-frames:v", max(1, math.ceil(budget * 4 * seconds / duration)), "-progress", work / "decode-progress.txt",
+                 "-q:v", "2", frames / f"{clip:03d}-%05d.jpg"], work, lease, 600)
+            decoded = sorted(frames.glob(f"{clip:03d}-*.jpg"))
+            if decoded:
+                with Image.open(decoded[0]) as first:
+                    sizes.add(first.size)
+            clips.update({path: clip for path in decoded})
+        if len(sizes) > 1:
+            # One shared lens model is solved for the whole capture.
+            raise ValueError("The clips have different frame sizes. Record every clip with the same phone, orientation and zoom.")
         files = sorted(frames.glob("*.jpg"))
     candidates = []
     hashes = set()
@@ -151,7 +173,7 @@ def prepare(media, storage, work: Path, profile, lease):
                 gray = cv2.cvtColor(np.asarray(thumbnail), cv2.COLOR_RGB2GRAY)
                 sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
                 # Retain paths and small thumbnails, not hundreds of full RGB images.
-                candidates.append(Frame(index, sharpness, path, gray))
+                candidates.append(Frame(index, sharpness, path, gray, clips.get(path, 0)))
         except (OSError, Image.DecompressionBombError) as error:
             raise ValueError("A photo could not be decoded safely") from error
     if video:

@@ -37,7 +37,7 @@ test("the avatar viewer lists the account's avatars and opens a finished one", a
 test("the avatar viewer explains how to get a first avatar", async ({ page }) => {
   await page.route("**/v1/photo-captures", route => route.fulfill({ json: [] }));
   await page.goto("/#avatar");
-  await expect(page.getByText("No avatars yet. Upload photos or a walk-around video of a person and build an avatar.")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open Photo library →" })).toHaveAttribute("href", "#photos");
+  await expect(page.getByText("No avatars yet. Upload a walk-around video of a person and build an avatar.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Avatar library →" })).toHaveAttribute("href", "#photos");
   await expect(page.getByText(/HUGS/)).toHaveCount(0);
 });

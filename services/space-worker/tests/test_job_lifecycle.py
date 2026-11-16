@@ -166,7 +166,7 @@ class QueueKindTests(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *_): pass
             def execute(self, statement, parameters=()):
-                statement = statement.replace("%s", "?").replace("interval '120 seconds'", "120")
+                statement = statement.replace("%s", "?").replace("interval '300 seconds'", "300")
                 statement = statement.replace("FOR UPDATE OF j SKIP LOCKED", "")
                 cursor = connection.execute(statement, tuple(str(p) if isinstance(p, uuid.UUID) else p for p in parameters))
                 return SimpleNamespace(fetchone=lambda: dict(row) if (row := cursor.fetchone()) else None)

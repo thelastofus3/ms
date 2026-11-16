@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { type Capture, frameCount, isActive, overallProgress, photoApi, photoRequest } from "./avatarJobs";
 import { GaussianRenderer } from "./renderer";
 import type { Motion } from "./rig";
+import { FilePicker } from "../FilePicker";
 
 const selectedFromHash = () => new URLSearchParams(location.hash.split("?")[1] || "").get("capture") || "";
 
@@ -71,14 +72,13 @@ export function GaussianStudio() {
   const built = captures.filter(item => item.job);
   return <main className="gaussian-studio">
     <header>
-      <p className="eyebrow">GAUSSIAN AVATAR</p>
       <h1>Avatar viewer</h1>
-      <p>Photographic 3D people reconstructed from your photo sets. Build new ones in the <a href="#photos">Photo library</a>.</p>
+      <p>Photographic 3D people reconstructed from walk-around videos. Build new ones in the <a href="#photos">Avatar library</a>.</p>
     </header>
     <div className="gaussian-layout avatar-layout">
       <nav className="avatar-list" aria-label="Avatars">
         <h2>Your avatars</h2>
-        {!built.length && <p className="gaussian-note">None yet. Save a photo set in the Photo library and press “Build 3D avatar”.</p>}
+        {!built.length && <p className="gaussian-note">None yet. Upload a walk-around video in the Avatar library and press “Build 3D avatar”.</p>}
         {built.map(item => {
           const job = item.job!, percent = Math.round(overallProgress(job) * 100);
           return <button key={item.id} className="avatar-list-item" aria-pressed={selected === item.id} onClick={() => choose(item.id)}>
@@ -92,12 +92,12 @@ export function GaussianStudio() {
       <div className="gaussian-view-column">
         <div className="gaussian-view" ref={host} />
         {!selectedCapture && <div className="avatar-view-overlay">
-          <p>{built.length ? "Choose an avatar on the left." : "No avatars yet. Upload photos or a walk-around video of a person and build an avatar."}</p>
-          <a className="workspace-action" href="#photos">Open Photo library →</a>
+          <p>{built.length ? "Choose an avatar on the left." : "No avatars yet. Upload a walk-around video of a person and build an avatar."}</p>
+          <a className="workspace-action" href="#photos">Open Avatar library →</a>
         </div>}
         {!ready && selectedCapture && <div className="avatar-view-overlay">
-          <p>{isActive(selectedCapture.job) ? `This avatar is still being built (${Math.round(overallProgress(selectedCapture.job!) * 100)}%). Follow the stages in the Photo library.` : "This avatar has no finished model. Check its build in the Photo library."}</p>
-          <a className="workspace-action" href="#photos">Open Photo library →</a>
+          <p>{isActive(selectedCapture.job) ? `This avatar is still being built (${Math.round(overallProgress(selectedCapture.job!) * 100)}%). Follow the stages in the Avatar library.` : "This avatar has no finished model. Check its build in the Avatar library."}</p>
+          <a className="workspace-action" href="#photos">Open Avatar library →</a>
         </div>}
       </div>
       <aside className="gaussian-panel">
@@ -119,11 +119,11 @@ export function GaussianStudio() {
         <button onClick={() => viewer.current?.resetView()}>Reset camera</button>
         <hr />
         <label>Open a local PLY / SPLAT
-          <input type="file" accept=".ply,.splat" onChange={e => { const file = e.target.files?.[0]; if (file) void load(file); e.target.value = ""; }} />
+          <FilePicker accept=".ply,.splat" onChange={e => { const file = e.target.files?.[0]; if (file) void load(file); e.target.value = ""; }} />
         </label>
         <p className="gaussian-note">{rigged
-          ? "Skeleton from the photos; Gaussians follow the bones. Strong bends and loose clothing can stretch."
-          : "This avatar was built before skeletons were added; rebuild it in the Photo library to animate it."}</p>
+          ? "Skeleton from the source frames; Gaussians follow the bones. Strong bends and loose clothing can stretch."
+          : "This avatar was built before skeletons were added; rebuild it in the Avatar library to animate it."}</p>
         <p className="gaussian-note">Drag to orbit · wheel to zoom · right-drag to pan</p>
       </aside>
     </div>

@@ -11,9 +11,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 import pycolmap
 from PIL import Image
-from rembg import new_session, remove
+from rembg import remove
+from rembg.sessions import sessions_class
 
 from progress import report as progress
 
@@ -46,7 +48,7 @@ def segment(sessions, image):
     rough = largest_person(np.asarray(remove(image, session=sessions["rough"], only_mask=True)))
     ys, xs = np.nonzero(rough)
     if not len(xs):
-        print("ERROR No person was found in one of the photos. Every photo must show the whole person.", flush=True)
+        print("ERROR No person was found in one of the views. The whole person must stay in the frame.", flush=True)
         sys.exit(1)
     h, w = rough.shape
     pad = int(0.12 * max(xs.max() - xs.min(), ys.max() - ys.min()))
@@ -70,12 +72,7 @@ def principal_point_of_ring(model):
     return np.linalg.solve(a, b)
 
 
-def visual_hull(model, masks, resolution=160, tolerance=1):
-    centre = principal_point_of_ring(model)
-    radius = np.mean([np.linalg.norm(img.projection_center() - centre) for img in model.images.values()])
-    half = 0.5 * radius
-    axis = np.linspace(-half, half, resolution)
-    grid = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), -1).reshape(-1, 3) + centre
+def carve(model, masks, grid, tolerance):
     misses = np.zeros(len(grid), np.int16)
     for image in model.images.values():
         camera, mask = model.cameras[image.camera_id], masks[image.name]
@@ -88,8 +85,24 @@ def visual_hull(model, masks, resolution=160, tolerance=1):
         hit = np.zeros(len(grid), bool)
         hit[inside] = mask[y[inside], x[inside]] > 0
         misses += ~hit
-    occupied = misses <= tolerance
-    return grid[occupied], centre, radius, axis[1] - axis[0]
+    return grid[misses <= tolerance]
+
+
+def visual_hull(model, masks, resolution=160, tolerance=1):
+    centre = principal_point_of_ring(model)
+    radius = np.mean([np.linalg.norm(img.projection_center() - centre) for img in model.images.values()])
+    # A phone circling at arm's length is closer than the person is tall (measured: height = ring radius), so a box sized
+    # by the radius cut off head and feet. Find the person coarsely in a generous box, then carve finely inside their bounds.
+    axis = np.linspace(-1.5 * radius, 1.5 * radius, 96)
+    coarse = carve(model, masks, np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), -1).reshape(-1, 3) + centre, tolerance)
+    if not len(coarse):
+        print("ERROR The person's outline does not agree between the views. Keep the person still and the whole body in the frame.", flush=True)
+        sys.exit(1)
+    margin = 2 * (axis[1] - axis[0])
+    low, high = coarse.min(0) - margin, coarse.max(0) + margin
+    voxel = float((high - low).max() / (resolution - 1))
+    axes = [np.arange(low[i], high[i] + voxel, voxel) for i in range(3)]
+    return carve(model, masks, np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3), tolerance), centre, radius, voxel
 
 
 def hull_iou(model, masks, points, voxel):
@@ -115,8 +128,12 @@ def main(model_name="birefnet-general"):
     out = WORK / "masks"; out.mkdir(exist_ok=True)
     progress(0.02, "Loading the segmentation models")
     # CPU on purpose: BiRefNet in FP32 does not fit beside training on a 6 GB GPU (measured 6.6 s, then 151 s paging).
-    cpu = ["CPUExecutionProvider"]
-    sessions = {"rough": new_session("u2net_human_seg", providers=cpu), "fine": new_session(model_name, providers=cpu)}
+    # Without the allocator arena: with it BiRefNet grew to 13.6 GiB and swapped (3 frames in 12 min on a 15 GiB VM);
+    # without it the peak is 7.5 GiB at ~32 s per frame.
+    options = ort.SessionOptions()
+    options.enable_cpu_mem_arena = False; options.enable_mem_pattern = False
+    session = lambda name: next(c for c in sessions_class if c.name() == name)(name, options, ["CPUExecutionProvider"])
+    sessions = {"rough": session("u2net_human_seg"), "fine": session(model_name)}
     masks, boxes = {}, {}
     for index, path in enumerate(images):
         image = Image.open(path).convert("RGB")
@@ -125,7 +142,7 @@ def main(model_name="birefnet-general"):
         cv2.imwrite(str(out / f"{path.stem}.alpha.png"), soft.astype(np.uint8))
         masks[path.name], boxes[path.name] = mask, box
         print(path.name, "mask px", int(np.count_nonzero(mask)), "box", box, flush=True)
-        progress(0.05 + 0.85 * (index + 1) / len(images), f"Person segmented in {index + 1}/{len(images)} photos")
+        progress(0.05 + 0.85 * (index + 1) / len(images), f"Person segmented in {index + 1}/{len(images)} views")
     model = pycolmap.Reconstruction(str(next(p for p in (WORK / "colmap/sparse").iterdir())))
     progress(0.92, "Checking masks against each other (visual hull)")
     points, centre, radius, voxel = visual_hull(model, masks)
@@ -148,6 +165,7 @@ def main(model_name="birefnet-general"):
         tiles.append(cv2.resize(crop, (int(crop.shape[1] * 360 / crop.shape[0]), 360)))
     width = max(t.shape[1] for t in tiles)
     tiles = [cv2.copyMakeBorder(t, 0, 0, 0, width - t.shape[1], cv2.BORDER_CONSTANT) for t in tiles]
+    tiles += [np.zeros_like(tiles[0])] * (-len(tiles) % 8)
     rows = [np.hstack(tiles[i:i + 8]) for i in range(0, len(tiles), 8)]
     cv2.imwrite(str(WORK / "masks-sheet.jpg"), np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 85])
 

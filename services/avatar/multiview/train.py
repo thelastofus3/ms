@@ -17,6 +17,11 @@ import torch
 from progress import report as progress
 
 WORK = Path(os.environ.get("AVATAR_WORK", "/work"))
+# The browser package (.splat) keeps only each Gaussian's base colour, so view-dependent colour (SH > 0) learnt here would be
+# thrown away and leave blotchy, wrongly tinted splats in the viewer. Train what is shown.
+SH_DEGREE = os.environ.get("AVATAR_SH_DEGREE", "0")
+DENSIFY_GRAD = os.environ.get("AVATAR_DENSIFY_GRAD", "0.0006")
+EXTRA = os.environ.get("AVATAR_TRAIN_EXTRA", "").split()
 
 
 def train(steps, name):
@@ -26,9 +31,9 @@ def train(steps, name):
                "--max-num-iterations", steps, "--steps-per-save", 5000,
                "--pipeline.datamanager.cache-images", "gpu",
                "--pipeline.model.background-color", "random", "--pipeline.model.random-init", "False",
-               "--pipeline.model.sh-degree", 3, "--pipeline.model.cull-alpha-thresh", 0.005,
-               "--pipeline.model.densify-grad-thresh", 0.0006, "--pipeline.model.stop-split-at", int(steps * 0.6),
-               "--pipeline.model.use-scale-regularization", "True",
+               "--pipeline.model.sh-degree", SH_DEGREE, "--pipeline.model.cull-alpha-thresh", 0.005,
+               "--pipeline.model.densify-grad-thresh", DENSIFY_GRAD, "--pipeline.model.stop-split-at", int(steps * 0.6),
+               "--pipeline.model.use-scale-regularization", "True", *EXTRA,
                "nerfstudio-data", "--eval-mode", "all", "--orientation-method", "up", "--center-method", "poses"]
     started = time.monotonic()
     progress(0.0, "Starting Gaussian training", step=0, steps=steps)
@@ -96,7 +101,7 @@ def export(config):
 def main(steps="15000", name="v1"):
     torch.cuda.reset_peak_memory_stats()
     config, seconds = train(int(steps), name)
-    progress(0.92, "Scoring held-out photos")
+    progress(0.92, "Scoring held-out views")
     results, gaussians = evaluate(config)
     progress(0.96, "Exporting the 3D model")
     ply = export(config)
@@ -106,7 +111,7 @@ def main(steps="15000", name="v1"):
               "plyBytes": ply.stat().st_size}
     (WORK / f"train-report-{name}.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
-    quality = f"held-out PSNR {mean['psnr']:.1f} dB, SSIM {mean['ssim']:.3f}" if mean else "no held-out photos"
+    quality = f"held-out PSNR {mean['psnr']:.1f} dB, SSIM {mean['ssim']:.3f}" if mean else "no held-out views"
     progress(1.0, f"{int(gaussians):,} Gaussians · {quality}", gaussians=int(gaussians), **{k: round(v, 4) for k, v in mean.items()})
 
 

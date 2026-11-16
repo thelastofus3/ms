@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { request } from "./space/api";
 import type { Account, Role } from "./session";
 import { currentAccount, expireSession, sessionRevision } from "./session";
 import { AccountQuotaEditor } from "./space/AccountQuota";
 import { Icon } from "./Icon";
 
+const SplatField = lazy(() => import("./SplatField"));
 const base = "/v1/rooms/auth";
 type LoginResponse = { account: Account; accessToken: string; tokenType: "Bearer"; expiresIn: number };
 export const me = () => request<Account>(`${base}/me`);
@@ -17,22 +18,10 @@ export function Login({ onLogin }: { onLogin: (account: Account) => void }) {
     setRegistering(register); setPassword(""); setConfirmation(""); setError("");
   };
   return <main className="auth-page">
+    <Suspense fallback={null}><SplatField shape={registering ? "scene" : "room"} className="auth-field" /></Suspense>
     <aside className="auth-intro">
       <div className="auth-intro-brand"><Icon name="cube" /><div>Digital Studio<small>3D workspaces</small></div></div>
-      <div className="auth-intro-copy"><p className="eyebrow">A NEW DIMENSION</p><h2>Real spaces.<br />New perspectives.</h2><p>Capture a room, import a Gaussian scene, and explore it in 3D.</p></div>
-      <div className="auth-scene" aria-hidden="true">
-        <svg viewBox="0 0 580 390" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs><linearGradient id="auth-scene-floor" x1="110" y1="225" x2="460" y2="350" gradientUnits="userSpaceOnUse"><stop stopColor="currentColor" stopOpacity="0.16" /><stop offset="1" stopColor="currentColor" stopOpacity="0.02" /></linearGradient></defs>
-          <ellipse className="auth-orbit" cx="290" cy="282" rx="244" ry="79" transform="rotate(-12 290 282)" />
-          <path className="auth-scene-surface" d="M120 246 286 165 461 249 291 335Z" fill="url(#auth-scene-floor)" />
-          <path className="auth-scene-wall" d="M120 246V96L286 24V165M286 24 461 102V249M120 96 291 178 461 102M291 178V335" />
-          <path className="auth-scene-outline" d="M120 246 286 165 461 249 291 335 120 246Z" />
-          <path className="auth-scene-grid" d="m155 229 169 89m-132-107 169 89m-132-107 169 89m-74-99-168 83m205-65-168 83m205-65-168 83" />
-          <path className="auth-scene-furniture" d="m173 202 57-28 62 30-58 29-61-31Zm0 0v37l61 31 58-29v-37m-58 29v37m91-77 45-22 38 18-45 23-38-19Zm0 0v48l38 19 45-23v-48m-45 23v48" />
-          <path className="auth-scene-window" d="m321 62 80 36v77l-80-37V62Zm40 18v76m-40-56 80 37" />
-          <g className="auth-scene-points"><circle cx="120" cy="96" r="4" /><circle cx="286" cy="24" r="4" /><circle cx="461" cy="102" r="4" /><circle cx="120" cy="246" r="4" /><circle cx="291" cy="335" r="4" /><circle cx="461" cy="249" r="4" /></g>
-        </svg>
-      </div>
+      <div className="auth-intro-copy"><h2>Real spaces.<br />New perspectives.</h2><p>Capture a room, import a Gaussian scene, and explore it in 3D.</p></div>
       <div className="auth-intro-features"><span><Icon name="camera" />Capture</span><span><Icon name="layers" />Import</span><span><Icon name="eye" />Explore</span></div>
     </aside>
     <section className="auth-form-panel"><form className="auth-card" aria-busy={busy} onSubmit={async event => {
@@ -42,7 +31,7 @@ export function Login({ onLogin }: { onLogin: (account: Account) => void }) {
     try { const result = await request<LoginResponse>(`${base}/${registering ? "register" : "login"}`, { username: username.trim(), password }); onLogin(result.account); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
-  }}><p className="eyebrow">{registering ? "YOUR ACCOUNT" : "WELCOME BACK"}</p><h1>{registering ? "Register" : "Sign in"}</h1><p>{registering ? "New accounts can import Gaussian PLY files. An administrator can enable video and photo reconstruction." : "Use your username and password to access your scenes."}</p>
+  }}><h1>{registering ? "Register" : "Sign in"}</h1><p>{registering ? "New accounts can import Gaussian PLY files. An administrator can enable video and photo reconstruction." : "Use your username and password to access your scenes."}</p>
     <label>Username<input autoComplete="username" required minLength={registering ? 3 : undefined} maxLength={registering ? 64 : 100} value={username} disabled={busy} onChange={e => setUsername(e.target.value)} /></label>
     <label>Password<input type="password" autoComplete={registering ? "new-password" : "current-password"} required minLength={registering ? 12 : undefined} maxLength={registering ? 1024 : undefined} aria-describedby={registering ? "registration-password-help" : undefined} value={password} disabled={busy} onChange={e => setPassword(e.target.value)} /></label>
     {registering && <><p id="registration-password-help" className="auth-help">Use a password with 12–1024 characters.</p><label>Confirm password<input type="password" autoComplete="new-password" required minLength={12} maxLength={1024} value={confirmation} disabled={busy} onChange={e => setConfirmation(e.target.value)} /></label></>}
@@ -79,7 +68,7 @@ export function AdminUsers() {
     void request<Account[]>(`${base}/users`, undefined, controller.signal).then(setAccounts).catch(e => { if (!controller.signal.aborted) setError(String(e)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, []);
-  return <main className="admin-page"><header><p className="eyebrow">ADMINISTRATION</p><h1>Accounts</h1><p>Manage registered accounts and assign roles. New accounts start as PLY uploaders. Password, role and disabled changes revoke the account's active access tokens.</p></header>
+  return <main className="admin-page"><header><h1>Accounts</h1><p>Manage registered accounts and assign roles. New accounts start as PLY uploaders. Password, role and disabled changes revoke the account's active access tokens.</p></header>
     {error && <p role="alert" className="error">{error}</p>}{loading && <p role="status">Loading accounts…</p>}
     <div className="account-grid">{accounts.map(account => <section className="account-management" key={account.id} aria-label={`Account ${account.username}`}><AccountEditor account={account} onSave={updated => setAccounts(current => current.map(item => item.id === updated.id ? updated : item))} /><AccountQuotaEditor id={account.id} username={account.username} /></section>)}</div>
   </main>;

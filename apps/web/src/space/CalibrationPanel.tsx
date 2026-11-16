@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { calibrationIssues, distance, floorFrame, metersPerUnit, projectToFloor } from "./calibration";
+import { automaticScale, calibrationIssues, distance, floorFrame, metersPerUnit, projectToFloor, scaleWarning, usesAutomaticScale } from "./calibration";
 import { FineFloorControls } from "./FineFloorControls";
 import type { Calibration, CalibrationTool, Point, RoomManifest } from "./types";
 
@@ -42,7 +42,7 @@ export function CalibrationPanel(p: Props) {
   const format = (meters: number) => `${(meters / units[unit].factor).toFixed(unit === "cm" ? 1 : 2)} ${unit}`;
   return <section className="room-calibration" aria-label="Room setup tools">
     <fieldset className="room-calibration-fields" disabled={p.loading} aria-label="Room setup controls">
-    <div className="room-setup-heading"><div><p className="eyebrow">ROOM SETUP</p><h2>{scene.ready ? "Edit dimensions & walking area" : "Make the room yours"}</h2></div><span className="room-draft-status">{p.dirty ? p.draftSaved ? "Draft saved in this browser" : "Unsaved changes" : scene.ready ? "Saved room settings" : "Suggested floor · review needed"}</span></div>
+    <div className="room-setup-heading"><div><p className="eyebrow">Room setup</p><h2>{scene.ready ? "Edit dimensions & walking area" : "Make the room yours"}</h2></div><span className="room-draft-status">{p.dirty ? p.draftSaved ? "Draft saved in this browser" : "Unsaved changes" : scene.ready ? "Saved room settings" : "Suggested floor · review needed"}</span></div>
     <nav className="room-wizard" aria-label="Room setup steps">{steps.map((step, i) => <button key={step.id} aria-current={tool === step.id || floorStep && step.id === "floor" ? "step" : undefined} onClick={() => p.onTool(step.id)}><span>{!issues[step.id] ? "✓" : i + 1}</span>{step.short}</button>)}</nav>
     <div className="room-tool-heading"><h3>{steps.find(s => s.id === (floorStep ? "floor" : tool))?.title ?? (tool === "dimension" ? "Measure another dimension" : "Add a blocking obstacle")}</h3><div className="room-tool-actions"><button disabled={!p.canUndo && !p.pending} onClick={p.onUndo}>↶ Undo</button><button disabled={tool === "review" || tool === "floor-height"} onClick={p.onClear}>Clear this tool</button></div></div>
     {floorStep && <>
@@ -62,6 +62,8 @@ export function CalibrationPanel(p: Props) {
       <div className="room-pick-slots">{["First end", "Second end"].map((name, i) => <button key={name} disabled={i > c.measurement.length} className={p.target === i ? "active" : ""} onClick={() => p.onTool("measurement", i)}><span>{i ? "B" : "A"}</span><strong>{name}</strong><small>{c.measurement[i] ? "Selected · click to replace" : "Click, then pick in the room"}</small></button>)}</div>
       <div className="room-dimension-input"><label>Real distance from A to B<input aria-label="Known real distance" type="number" min={0.05 / units[unit].factor} max={100 / units[unit].factor} step="any" placeholder={unit === "cm" ? "e.g. 210" : "e.g. 2.10"} value={c.meters > 0 ? Number((c.meters / units[unit].factor).toFixed(6)) : ""} onChange={e => p.onChange(current => ({ ...current, meters: Number(e.target.value) * units[unit].factor, reviewed: false }))} /></label><label>Unit<select value={unit} onChange={e => setUnit(e.target.value as Unit)}>{Object.entries(units).map(([key, value]) => <option key={key} value={key}>{value.title}</option>)}</select></label></div>
       {scale && <p className="room-success">Scale preview applied. A → B = {format(c.meters)}. All other rulers now use this scale.</p>}
+      {usesAutomaticScale(c, scene) && <p className="room-help">This scale was set automatically from the height the camera was carried at during the capture (about 1.45 m), which is accurate to roughly 10 %. For exact dimensions, measure a real distance and pick its two ends.</p>}
+      {scaleWarning(c, scene) && <p className="room-error" role="alert">{scaleWarning(c, scene)} <button onClick={() => p.onChange(current => ({ ...current, ...automaticScale(scene)!, reviewed: false }))}>Use automatic scale</button></p>}
     </>}
     {tool === "boundary" && <>
       <p>Click corners around the open floor in order. The highlighted area is where you can walk; keep furniture and capture gaps outside it.</p>
@@ -74,6 +76,7 @@ export function CalibrationPanel(p: Props) {
     </>}
     {tool === "review" && <>
       <div className="room-review-list">{steps.filter(s => s.id !== "review").map(s => <button key={s.id} onClick={() => p.onTool(s.id)}><span>{issues[s.id] ? "○" : "✓"}</span><strong>{s.short}</strong><small>{issues[s.id] ?? (s.id === "measurement" ? format(c.meters) : s.id === "boundary" ? `${c.boundary.length} floor corners` : "Ready")}</small></button>)}</div>
+      {scaleWarning(c, scene) && <p className="room-error" role="alert">{scaleWarning(c, scene)} <button onClick={() => p.onTool("measurement")}>Check the scale</button></p>}
       <p>The collision mesh blocks reconstructed walls and furniture. Review its surfaces and keep the walking area inside the reliable capture.</p>
       <label className="room-review"><input type="checkbox" checked={c.reviewed} onChange={e => p.onChange(current => ({ ...current, reviewed: e.target.checked }))} /> I checked the floor, walking area and collision surfaces.</label>
       <p className="room-help">Walking uses a 1.65 m eye height and a speed of 1.5 m/s.</p>

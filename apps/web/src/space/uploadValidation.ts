@@ -19,7 +19,7 @@ export function mediaContentType(file: Pick<File, "name" | "type">): string {
 }
 
 export function validateRoomCapture(files: readonly CaptureFile[]): string | undefined {
-  if (!files.length) return "Choose 12–500 overlapping photos or one video.";
+  if (!files.length) return "Choose 12–500 overlapping photos, or one or more video clips of the room.";
   if (files.length > 500) return "Choose at most 500 photos for one room capture.";
   let total = 0, videos = 0;
   for (const file of files) {
@@ -31,8 +31,9 @@ export function validateRoomCapture(files: readonly CaptureFile[]): string | und
     total += file.size;
     if (video) videos++;
   }
-  if (videos && files.length !== 1) return "Choose one video on its own, or a set of photos. Videos and photos cannot be combined.";
-  if (!videos && files.length < 12) return "Choose at least 12 overlapping photos, or one video.";
-  if (total > 3 * 1024 ** 3) return "The capture exceeds 3 GiB total. Choose fewer or smaller photos.";
+  if (videos && videos !== files.length) return "Choose video clips or photos, not both. Videos and photos cannot be combined.";
+  if (videos > 24) return "Choose at most 24 video clips for one room.";
+  if (!videos && files.length < 12) return "Choose at least 12 overlapping photos, or a video.";
+  if (total > 3 * 1024 ** 3) return `The capture exceeds 3 GiB total. Choose fewer or smaller ${videos ? "clips" : "photos"}.`;
   return undefined;
 }

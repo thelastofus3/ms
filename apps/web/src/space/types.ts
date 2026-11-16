@@ -13,7 +13,9 @@ export type RoomManifest = {
   worldFromReconstruction: number[]; previewCamera: number[];
   collisionReviewed: boolean; navigation?: Navigation;
   calibration?: Calibration;
-  floorProposal?: { floorPoints?: Point[]; boundary?: Point[]; spawn?: Point; requiresReview?: boolean } | null;
+  floorProposal?: { floorPoints?: Point[]; boundary?: Point[]; spawn?: Point; requiresReview?: boolean;
+    /** Median height of the capturing camera above the detected floor, in reconstruction units. */
+    captureHeight?: number } | null;
 };
 export type Job = {
   id: string; name: string; state: string; stage: string; progress: number;

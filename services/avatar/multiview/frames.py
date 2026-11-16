@@ -16,7 +16,7 @@ import numpy as np
 from progress import report as progress
 
 INPUT, WORK = Path(os.environ.get("AVATAR_INPUT", "/input")), Path(os.environ.get("AVATAR_WORK", "/work"))
-TARGET = int(os.environ.get("AVATAR_VIDEO_FRAMES", "36"))
+TARGET = int(os.environ.get("AVATAR_VIDEO_FRAMES", "72"))
 
 
 def fail(message):
@@ -40,10 +40,10 @@ def main():
     candidates = WORK / "candidates"
     shutil.rmtree(candidates, ignore_errors=True); candidates.mkdir(parents=True)
     # About five candidates per selected frame; ffmpeg applies the rotation metadata of phone videos.
-    fps = min(10.0, TARGET * 5 / duration)
+    fps = min(15.0, TARGET * 5 / duration)
     progress(0.05, f"Decoding {duration:.0f} s of video")
     subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(videos[0]), "-an",
-                    "-vf", f"fps={fps:.4f},scale='if(gt(iw,ih),min(1600,iw),-2)':'if(gt(iw,ih),-2,min(1600,ih))'",
+                    "-vf", f"fps={fps:.4f},scale='if(gt(iw,ih),min(1920,iw),-2)':'if(gt(iw,ih),-2,min(1920,ih))'",
                     "-q:v", "2", str(candidates / "%05d.jpg")], check=True, timeout=1800)
     paths = sorted(candidates.glob("*.jpg"))
     if len(paths) < 12:

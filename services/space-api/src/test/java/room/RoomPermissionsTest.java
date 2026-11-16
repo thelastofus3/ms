@@ -94,4 +94,21 @@ class RoomPermissionsTest {
         assertThrows(ResponseStatusException.class, () -> controller.calibrate(uploadId, null, request));
         verifyNoInteractions(storage);
     }
+    @Test void onlyFailedCapturesContinueAndSplatOnlyAccountsCannot() {
+        forbidden(() -> controller.resumeJob(uploadId, request));
+        request.setAttribute("roomAccount", new AuthService.Account(accountId.toString(), "admin", Role.ADMIN, false));
+        for(var row:List.of(Map.<String,Object>of("kind", "splat", "state", "FAILED"), Map.<String,Object>of("kind", "capture", "state", "READY"))) {
+            when(db.queryForList(contains("room_jobs"), eq(uploadId), eq(accountId.toString()))).thenReturn(List.of(row));
+            assertEquals(HttpStatus.CONFLICT, assertThrows(ResponseStatusException.class, () -> controller.resumeJob(uploadId, request)).getStatusCode());
+        }
+        verify(db, never()).update(contains("UPDATE room_jobs"), any(Object[].class));
+    }
+    @Test void failedCaptureIsQueuedAgainOnTheSameJob() {
+        request.setAttribute("roomAccount", new AuthService.Account(accountId.toString(), "admin", Role.ADMIN, false));
+        var job = new HashMap<String,Object>(Map.of("id", uploadId, "kind", "capture", "state", "FAILED", "upload_id", uploadId, "diagnostics", "{}"));
+        when(db.queryForList(contains("room_jobs"), eq(uploadId), eq(accountId.toString()))).thenReturn(List.of(job));
+        uploadRow("capture", true);
+        controller.resumeJob(uploadId, request);
+        verify(db).update(contains("state='QUEUED',stage='queued',progress=0,error=NULL,attempts=0"), eq(uploadId));
+    }
 }
