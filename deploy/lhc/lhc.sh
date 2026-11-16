@@ -207,6 +207,7 @@ EOF
   nginx_cmd -t -q || die "nginx config test failed"
   if running nginx; then nginx_cmd -s reload; log "nginx reloaded"; return; fi
   need_port nginx "$WEB_PORT"
+  rm -f "$RUN/nginx/web.sock"   # left behind when the environment was restarted; nginx refuses to bind over it
   nginx_cmd
   wait_http nginx "http://127.0.0.1:$WEB_PORT/healthz" ok
   log "Started nginx on 127.0.0.1:$WEB_PORT"
