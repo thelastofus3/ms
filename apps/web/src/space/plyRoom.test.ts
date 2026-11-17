@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { describeRoom, obstacleRuns } from "./plyRoom";
+import { describeRoom, obstacleRuns, readGaussianPly } from "./plyRoom";
+
+/** A binary Gaussian PLY with the usual properties: position, normal, three DC colours, opacity, scales, rotation. */
+function gaussianPly(splats: { at: number[]; opacity: number; scales: number[]; rotation: number[] }[]): ArrayBuffer {
+  const names = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"];
+  const header = `ply\nformat binary_little_endian 1.0\nelement vertex ${splats.length}\n${names.map(n => `property float ${n}`).join("\n")}\nend_header\n`;
+  const head = new TextEncoder().encode(header), buffer = new ArrayBuffer(head.length + splats.length * names.length * 4), view = new DataView(buffer, head.length);
+  new Uint8Array(buffer).set(head);
+  splats.forEach((s, i) => [...s.at, 0, 0, 0, 0.5, 0.5, 0.5, s.opacity, ...s.scales, ...s.rotation].forEach((value, k) => view.setFloat32((i * names.length + k) * 4, value, true)));
+  return buffer;
+}
+
+describe("reading an imported Gaussian PLY", () => {
+  it("keeps opaque splats and gives flat ones the direction they face", () => {
+    const quarterTurnAboutX = [Math.SQRT1_2, Math.SQRT1_2, 0, 0];   // w, x, y, z: local z turns to -y
+    const cloud = readGaussianPly(gaussianPly([
+      { at: [1, 2, 3], opacity: 3, scales: [Math.log(0.1), Math.log(0.1), Math.log(0.005)], rotation: quarterTurnAboutX },
+      { at: [4, 5, 6], opacity: -3, scales: [0, 0, 0], rotation: [1, 0, 0, 0] },                        // nearly transparent: dropped
+      { at: [7, 8, 9], opacity: 3, scales: [Math.log(0.1), Math.log(0.09), Math.log(0.08)], rotation: [1, 0, 0, 0] },   // round: no facing
+    ]))!;
+    expect([...cloud.centres]).toEqual([1, 2, 3, 7, 8, 9]);
+    expect(Math.abs(cloud.normals[1])).toBeCloseTo(1, 5);
+    expect([...cloud.normals.slice(3)]).toEqual([0, 0, 0]);
+  });
+  it("refuses what is not a binary Gaussian PLY", () => {
+    expect(readGaussianPly(new TextEncoder().encode("ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nend_header\n1\n").buffer)).toBeUndefined();
+  });
+});
 
 type V = [number, number, number];
 /** A furnished 4 x 3 m room, 2.6 m high, in units of `unit` metres, turned to an arbitrary orientation and offset. */

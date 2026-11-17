@@ -11,7 +11,7 @@ import { GAIT_PHASE_PER_METRE, locomotionPose } from "../gaussian/rig";
 import { fetchRigPackage, RiggedAvatar, type RigPackage } from "../gaussian/riggedAvatar";
 import { PoseFollower, retargetBody, seatedPose } from "../gaussian/retarget";
 import type { BodyPose } from "./tracking/types";
-import { describeRoom, obstacleRuns, type RoomShape } from "./plyRoom";
+import { describeRoom, obstacleRuns, readGaussianPly, type RoomShape } from "./plyRoom";
 
 /** A mirrored body pose older than this falls back to the walk/idle animation. */
 // Long enough to bridge a missed frame at two analysed frames a second; at 0.7 s the avatar kept dropping back to its idle animation.
@@ -60,6 +60,8 @@ export class RoomRenderer {
   private controls: OrbitControls;
   private collision?: THREE.Group;
   private mesh?: SplatMesh;
+  /** Centres and facings of an imported PLY's splats, read from the file (see `readGaussianPly`). */
+  private plyCloud?: { centres: Float32Array; normals: Float32Array };
   private manifest?: RoomManifest;
   private calibration?: Calibration;
   private tool: CalibrationTool = "review";
@@ -248,6 +250,8 @@ export class RoomRenderer {
     };
     const [splatBytes, collisionBytes] = await Promise.all([bytes(manifest.assets.splats), manifest.assets.collision ? bytes(manifest.assets.collision) : undefined]);
     if (this.disposed || generation !== this.generation) return;
+    // Read before the splat library takes the bytes over: it keeps them on the GPU and enumerates nothing afterwards.
+    this.plyCloud = manifest.sourceType === "gaussian-ply" ? readGaussianPly(splatBytes) : undefined;
     const mesh = new SplatMesh({ fileBytes: splatBytes, fileName: manifest.assets.splats.path, lod: true, extSplats: true, covSplats: true });
     let collision: THREE.Group | undefined;
     try { if (collisionBytes) collision = (await new GLTFLoader().parseAsync(collisionBytes, "")).scene; await mesh.initialized; }
@@ -266,17 +270,7 @@ export class RoomRenderer {
   showCollision(show: boolean) { if (this.collision) this.collision.visible = show; }
   /** Floor, walking area, start point and scale of a loaded imported PLY, found in its splats (in the file's own coordinates). */
   roomShape(): RoomShape | undefined {
-    if (!this.mesh) return;
-    const centres: number[] = [], normals: number[] = [], axis = new THREE.Vector3();
-    this.mesh.forEachSplat((_, centre, scales, quaternion, opacity) => {
-      if (opacity < 0.35) return;
-      centres.push(centre.x, centre.y, centre.z);
-      // A clearly flat splat faces along its shortest axis; the others say nothing about a surface.
-      const s = [scales.x, scales.y, scales.z], k = s.indexOf(Math.min(...s)), sorted = [...s].sort((a, b) => a - b);
-      if (sorted[0] > 0 && sorted[1] / sorted[0] > 3) { axis.set(k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0).applyQuaternion(quaternion); normals.push(axis.x, axis.y, axis.z); }
-      else normals.push(0, 0, 0);
-    });
-    return describeRoom(new Float32Array(centres), new Float32Array(normals));
+    return this.plyCloud ? describeRoom(this.plyCloud.centres, this.plyCloud.normals) : undefined;
   }
   setTool(tool: CalibrationTool) { this.tool = tool; this.canvas.style.cursor = tool === "review" ? "grab" : "crosshair"; }
   preview(calibration: Calibration) {
@@ -688,11 +682,11 @@ export class RoomRenderer {
     this.scene.updateMatrixWorld(true);
     // An imported PLY has no collision mesh: whatever stands in the walking band (furniture, walls) blocks, read off the
     // splats as 10 cm columns; the walking body starts above the floor clutter anyway.
-    if (!this.collision && this.mesh) {
-      const world: number[] = [], centre = new THREE.Vector3(), toWorld = this.mesh.matrixWorld;
-      this.mesh.forEachSplat((_, c, __, ___, opacity) => { if (opacity < 0.35) return; centre.copy(c).applyMatrix4(toWorld); world.push(centre.x, centre.y, centre.z); });
+    if (!this.collision && this.mesh && this.plyCloud) {
+      const source = this.plyCloud.centres, world = new Float32Array(source.length), centre = new THREE.Vector3(), toWorld = this.mesh.matrixWorld;
+      for (let k = 0; k + 2 < source.length; k += 3) { centre.set(source[k], source[k + 1], source[k + 2]).applyMatrix4(toWorld); world[k] = centre.x; world[k + 1] = centre.y; world[k + 2] = centre.z; }
       const size = 0.1, from = WALK_CLEARANCE, to = n.capsuleHeight;
-      for (const [x, z, cells] of obstacleRuns(new Float32Array(world), n.floorY, size, from, to))
+      for (const [x, z, cells] of obstacleRuns(world, n.floorY, size, from, to))
         this.world.createCollider(RAPIER.ColliderDesc.cuboid(cells * size / 2, (to - from) / 2, size / 2).setTranslation(x + cells * size / 2, n.floorY + (from + to) / 2, z + size / 2));
     }
     this.collision?.traverse(object => {

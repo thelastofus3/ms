@@ -13,6 +13,41 @@ export type RoomShape = {
   height: number; metresPerUnit: number; scaleFrom: "units" | "ceiling";
 };
 type V = [number, number, number];
+
+/**
+ * Splat centres and surface facings straight from an imported Gaussian PLY (binary little-endian, every property a
+ * float32, as the import accepts). The renderer's splat library keeps its copy on the GPU and enumerates nothing once a
+ * scene is loaded, so the file is read here, before it is handed over. Faint splats are dropped; a splat's facing is its
+ * shortest axis when it is clearly flat, otherwise zero.
+ */
+export function readGaussianPly(bytes: ArrayBuffer): { centres: Float32Array; normals: Float32Array } | undefined {
+  const head = new TextDecoder("latin1").decode(new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 65536))), end = head.indexOf("end_header\n");
+  if (end < 0 || !/format binary_little_endian 1\.0/.test(head)) return;
+  const count = Number(/element vertex (\d+)/.exec(head)?.[1] ?? 0), names = [...head.slice(0, end).matchAll(/property float (\S+)/g)].map(m => m[1]);
+  const at = (name: string) => names.indexOf(name), stride = names.length * 4, start = end + "end_header\n".length;
+  const [x, y, z, opacity] = ["x", "y", "z", "opacity"].map(at), scale = [0, 1, 2].map(i => at("scale_" + i)), rotation = [0, 1, 2, 3].map(i => at("rot_" + i));
+  if (!count || [x, y, z].some(i => i < 0) || start + count * stride > bytes.byteLength) return;
+  const view = new DataView(bytes, start), centres = new Float32Array(count * 3), normals = new Float32Array(count * 3), withShape = [...scale, ...rotation].every(i => i >= 0);
+  let kept = 0;
+  for (let i = 0; i < count; i++) {
+    const read = (index: number) => view.getFloat32(i * stride + index * 4, true);
+    if (opacity >= 0 && 1 / (1 + Math.exp(-read(opacity))) < 0.35) continue;
+    centres[kept * 3] = read(x); centres[kept * 3 + 1] = read(y); centres[kept * 3 + 2] = read(z);
+    if (withShape) {
+      // Scales are stored as logarithms; rotation is w, x, y, z.
+      const s = scale.map(read), k = s.indexOf(Math.min(...s)), sorted = [...s].sort((a, b) => a - b);
+      if (sorted[1] - sorted[0] > Math.log(3)) {
+        let [qw, qx, qy, qz] = rotation.map(read); const l = Math.hypot(qw, qx, qy, qz) || 1; qw /= l; qx /= l; qy /= l; qz /= l;
+        const column = k === 0 ? [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qw * qz), 2 * (qx * qz - qw * qy)]
+          : k === 1 ? [2 * (qx * qy - qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qw * qx)]
+          : [2 * (qx * qz + qw * qy), 2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qy * qy)];
+        normals.set(column, kept * 3);
+      }
+    }
+    kept++;
+  }
+  return { centres: centres.subarray(0, kept * 3), normals: normals.subarray(0, kept * 3) };
+}
 const dot = (a: V, b: V) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: V, b: V): V => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const unit = (a: V): V => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
