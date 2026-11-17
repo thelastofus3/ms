@@ -120,6 +120,8 @@ http {
         location /assets/ { try_files $uri =404; add_header Cache-Control "public, max-age=31536000, immutable"; }
         location /tracking/ { try_files $uri =404; add_header Cache-Control "no-cache"; }
         location /demo/ { try_files $uri =404; }
+        # The default people avatar (a photographic likeness, kept out of git) lives on the data disk.
+        location /default-avatar/ { alias @RUN@/default-avatar/; add_header Cache-Control "no-cache"; }
         location = /index.html { add_header Cache-Control "no-cache"; }
         location / { try_files $uri $uri/ /index.html; }
     }

@@ -5,6 +5,7 @@ services:
     ports: ["127.0.0.1:5173:80"]
     volumes:
       - ./apps/web/public/demo:/usr/share/nginx/html/demo:ro
+      - ./.runtime/default-avatar:/usr/share/nginx/html/default-avatar:ro
     depends_on:
       room-api: { condition: service_healthy }
       room-localizer: { condition: service_started }

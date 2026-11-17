@@ -59,3 +59,23 @@ test("face recognition can be switched off and the choice is remembered", async 
   await expect(page.getByRole("checkbox", { name: "Recognize people by face" })).not.toBeChecked({ timeout: 15000 });
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("people are shown as the default 24-photo avatar until the user picks another look", async ({ page }) => {
+  await reconstructedRoom(page);
+  // The default avatar's package as the servers provide it (static files next to the app).
+  const requested: string[] = [];
+  await page.route("**/default-avatar/**", route => {
+    requested.push(new URL(route.request().url()).pathname);
+    return route.request().url().endsWith("/manifest.json") ? route.fulfill({ contentType: "application/json", json: {} }) : route.fulfill({ status: 404 });
+  });
+  await page.goto("/#room-tracking?job=legacy-reconstructed");
+  const picker = page.getByRole("combobox", { name: /people as/ });
+  await expect(picker).toHaveValue("default", { timeout: 15000 });
+  await expect(picker.locator("option[value=default]")).toHaveText("Default avatar · 24 photos");
+  // The renderer is asked for the package (the probe is a HEAD, the load a GET).
+  await expect.poll(() => requested.filter(path => path === "/default-avatar/manifest.json").length).toBeGreaterThan(1);
+  // An explicit choice of markers is kept, and the default does not come back on the next visit.
+  await picker.selectOption("");
+  await page.reload();
+  await expect(page.getByRole("combobox", { name: /people as/ })).toHaveValue("", { timeout: 15000 });
+});
