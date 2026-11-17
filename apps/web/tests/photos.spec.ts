@@ -6,37 +6,22 @@ test.beforeEach(async ({ page, context }) => {
   await context.addCookies([{ name: "room_access_token", value: testAccessToken, domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "Strict" }]);
 });
 
-test("the avatar library offers a video or about 24 photos as the source of a new avatar", async ({ page }) => {
+test("the avatar library has no legacy entry and takes a video, not photos", async ({ page }) => {
   await page.goto("/?mode=mesh#photos");
   await expect(page.getByRole("heading", { name: "Avatar library" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Skeleton prototype" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "New avatar" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New avatar from a video" })).toBeVisible();
   await expect(page.getByText("Circle once in 20–60 s.")).toBeVisible();
   const input = page.getByLabel("Avatar video");
   await expect(input).toHaveAttribute("accept", /video\/mp4/);
   await expect(input).not.toHaveAttribute("multiple", "");
-  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64");
-  // A photo given to the video source points to the photo source instead of failing later.
-  await input.setInputFiles({ name: "test.png", mimeType: "image/png", buffer: png });
-  await expect(page.getByRole("alert")).toContainText("Switch to \"From photos\"");
-  await page.getByRole("button", { name: "From photos" }).click();
-  const photos = page.getByLabel("Avatar photos");
-  await expect(photos).toHaveAttribute("multiple", "");
-  // Too few photos cannot be uploaded yet; enough of them can.
-  await photos.setInputFiles(Array.from({ length: 5 }, (_, i) => ({ name: `cam${i}.png`, mimeType: "image/png", buffer: png })));
-  await expect(page.getByText("add at least 3 more")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload and build avatar" })).toBeDisabled();
-  await photos.setInputFiles(Array.from({ length: 19 }, (_, i) => ({ name: `cam${i + 5}.png`, mimeType: "image/png", buffer: png })));
-  await expect(page.getByText(/^24 photos/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload and build avatar" })).toBeEnabled();
-  await page.getByRole("button", { name: "Upload only" }).click();
-  await expect(page.getByText("24 photos", { exact: true })).toBeVisible();
+  // A photo is refused with the reason instead of becoming a set that cannot be built.
+  await input.setInputFiles({ name: "test.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") });
+  await expect(page.getByRole("alert")).toContainText("Avatars are built from a video, not from photos.");
+  await expect(page.getByRole("button", { name: "Upload and build avatar" })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole("link", { name: "Avatar library", exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByText("24 photos", { exact: true })).toBeVisible();
-  // The test photo service is shared by the whole run: leave it as found.
-  await page.getByRole("button", { name: "Delete set" }).click();
-  await expect(page.getByText("No videos or photos saved yet.")).toBeVisible();
+  await expect(page.getByText("No videos saved yet.")).toBeVisible();
 });
 
 test("a photo set saved earlier can still be rebuilt or is explained when too small", async ({ page }) => {
@@ -47,7 +32,7 @@ test("a photo set saved earlier can still be rebuilt or is explained when too sm
   await expect(page.getByText("24 photos", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Build 3D avatar" }).first()).toBeEnabled();
   await expect(page.getByRole("button", { name: "Build 3D avatar" }).nth(1)).toBeDisabled();
-  await expect(page.getByText("This set has fewer than 8 photos, too few for an avatar. Add photos from all sides or upload a walk-around video.")).toBeVisible();
+  await expect(page.getByText("This set has fewer than 8 photos, too few for an avatar. Upload a walk-around video instead.")).toBeVisible();
 });
 
 test("avatar build progress is visible in the library and the viewer", async ({ page }) => {
@@ -91,7 +76,7 @@ test("a walk-around video can be saved as an avatar source", async ({ page }) =>
   // Videos have no photo minimum; frames are chosen by the worker.
   await expect(page.getByRole("button", { name: "Build 3D avatar" })).toBeEnabled();
   await page.getByRole("button", { name: "Delete set" }).click();
-  await expect(page.getByText("No videos or photos saved yet.")).toBeVisible();
+  await expect(page.getByText("No videos saved yet.")).toBeVisible();
 });
 
 test("dropping a video onto the drop zone selects it", async ({ page }) => {

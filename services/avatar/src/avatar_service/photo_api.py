@@ -27,11 +27,6 @@ RIG_FILES = {"manifest.json": "application/json", "avatar.splat": "application/o
 ACTIVE = {"queued", "running"}
 VIDEO_STAGE = ("frames", "Video frames")
 MAX_VIDEO_BYTES = 1024 ** 3
-
-
-def builds_available():
-    """AVATAR_BUILDS=off where no GPU worker runs (the LHC server): sources are still saved, builds are refused."""
-    return os.environ.get("AVATAR_BUILDS", "on").strip().lower() not in {"off", "0", "false", "no"}
 VIDEO_TYPES = {"video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm"}
 
 
@@ -128,8 +123,11 @@ def create_photo_app(data_dir=None):
             return JSONResponse({"detail": error.detail}, status_code=error.status_code,
                                 headers={"Cache-Control": "no-store"})
         request.state.owner = account["id"]
-        # Every account may build its own avatar, from a walk-around video or from photos around the person. Builds run one at a
-        # time on the GPU worker (shared lock with room reconstruction), so more users only lengthen the queue.
+        creates_capture = request.method == "POST" and (
+            request.url.path in {"/v1/photo-captures", "/v1/photo-captures/video"} or request.url.path.endswith("/generate")
+        )
+        if creates_capture and account["role"] not in {"ADMIN", "RECONSTRUCTOR"}:
+            return JSONResponse({"detail": "Your role permits Gaussian PLY uploads only"}, status_code=403)
         await asyncio.to_thread(claim_legacy, request)
 
         if request.method == "POST" and request.url.path == "/v1/photo-captures/video":
@@ -192,7 +190,7 @@ def create_photo_app(data_dir=None):
     @app.get("/v1/photo-captures/capabilities")
     def capabilities():
         return {
-            "generation_available": builds_available(),
+            "generation_available": True,
             "min_avatar_photos": MIN_AVATAR_PHOTOS,
             "max_photos": 32,
             "max_file_mb": 10,
@@ -327,9 +325,6 @@ def create_photo_app(data_dir=None):
     @app.post("/v1/photo-captures/{capture_id}/generate", status_code=202)
     def generate(capture_id: str, request: Request):
         path = capture(request, capture_id)
-        if not builds_available():
-            # Without a GPU worker a build would wait in the queue forever; say so instead.
-            raise HTTPException(503, "Avatar building is not available on this server: it has no GPU worker. Your videos and photos are saved and can be built where one runs.")
         item = json.loads((path / "capture.json").read_text(encoding="utf-8"))
         video = item.get("kind") == "video"
         if not video and item["photo_count"] < MIN_AVATAR_PHOTOS:

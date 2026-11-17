@@ -104,15 +104,15 @@ test("login gates requests, retains recovery until login, and restricts PLY-only
   await expect(page.getByRole("heading", { name: "Permission required" })).toBeVisible();
 });
 
-test("a PLY uploader sees their owned photo sets and can make avatars too", async ({ page }) => {
+test("a PLY uploader can view their owned photo sets without capture creation controls", async ({ page }) => {
   await page.route("**/v1/rooms/auth/me", route => route.fulfill({ json: account }));
   await page.route("**/v1/photo-captures", route => route.fulfill({ json: [{ id: "owned-capture", created_at: "2026-10-10T12:00:00Z", photo_count: 1, status: "photos_ready" }] }));
   await page.route("**/v1/photo-captures/owned-capture/photos/0", route => route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9Y0AAAAASUVORK5CYII=", "base64") }));
   await page.goto("/#photos");
   await expect(page.getByRole("heading", { name: "Avatar library", exact: true })).toBeVisible();
   await expect(page.getByText("1 photos", { exact: true })).toBeVisible();
-  await expect(page.locator(".photo-workspace input[type=file]")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "From photos", exact: true })).toBeVisible();
+  await expect(page.locator(".photo-workspace input[type=file]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Upload only", exact: true })).toHaveCount(0);
 });
 
 test("imported PLY opens an orbit viewer without GLTF, walking or tracking", async ({ page }) => {
