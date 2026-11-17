@@ -111,7 +111,7 @@ def test_bad_batch_is_atomic_and_foreign_origin_rejected(tmp_path):
     )
 
 
-def test_authentication_and_role_are_checked_before_accepting_photos(tmp_path):
+def test_authentication_is_checked_and_every_role_may_build_an_avatar(tmp_path):
     from avatar_service.photo_api import create_photo_app
 
     app = create_photo_app(tmp_path)
@@ -119,10 +119,25 @@ def test_authentication_and_role_are_checked_before_accepting_photos(tmp_path):
     assert anonymous.get("/health").status_code == 200
     assert anonymous.get("/v1/photo-captures").status_code == 401
     assert anonymous.post("/v1/photo-captures", files=[("photos", photo())]).status_code == 401
-    splat = client_for(app, "s")
-    assert splat.get("/v1/photo-captures").status_code == 200
-    assert splat.post("/v1/photo-captures", files=[("photos", photo())]).status_code == 403
     assert list(tmp_path.glob("*/capture.json")) == []
+    # An ordinary account (the role self-registration gives) uploads photos and builds from them like anyone else.
+    splat = client_for(app, "s")
+    item = splat.post("/v1/photo-captures", files=[("photos", photo()) for _ in range(8)]).json()
+    assert item["photo_count"] == 8
+    assert splat.post(f"/v1/photo-captures/{item['id']}/generate").status_code == 202
+
+
+def test_a_server_without_a_gpu_worker_saves_sources_but_refuses_builds(tmp_path, monkeypatch):
+    from avatar_service.photo_api import create_photo_app
+
+    monkeypatch.setenv("AVATAR_BUILDS", "off")
+    app = create_photo_app(tmp_path)
+    alice = client_for(app)
+    assert alice.get("/v1/photo-captures/capabilities").json()["generation_available"] is False
+    item = alice.post("/v1/photo-captures", files=[("photos", photo()) for _ in range(8)]).json()
+    refused = alice.post(f"/v1/photo-captures/{item['id']}/generate")
+    assert refused.status_code == 503 and "no GPU worker" in refused.json()["detail"]
+    assert alice.get(f"/v1/photo-captures/{item['id']}").json()["job"] is None
 
 
 def test_photo_identity_survives_token_rotation_and_cookie_writes_require_origin(tmp_path):
@@ -133,7 +148,6 @@ def test_photo_identity_survives_token_rotation_and_cookie_writes_require_origin
     item = alice.post("/v1/photo-captures", files=[("photos", photo())]).json()
     rotated = client_for(app, "s")  # Same account, different token and current role.
     assert rotated.get("/v1/photo-captures").json()[0]["id"] == item["id"]
-    assert rotated.post(f"/v1/photo-captures/{item['id']}/generate").status_code == 403
     without_origin = TestClient(app)
     without_origin.cookies.update(alice.cookies)
     assert without_origin.delete(f"/v1/photo-captures/{item['id']}").status_code == 403
@@ -278,8 +292,8 @@ def test_video_set_is_streamed_validated_and_gets_a_frames_stage(tmp_path):
     (tmp_path / ALICE / item["id"] / "work/input").mkdir(parents=True)
     (tmp_path / ALICE / item["id"] / "work/input/0.jpg").write_bytes(b"jpg")
     assert alice.get(path + "/photos/0").content == b"jpg"
-    # A WebM signature is accepted too; a photo-only role cannot upload video.
+    # A WebM signature is accepted too, from any role.
     webm = bytes.fromhex("1a45dfa3") + b"\x00" * 2048
     assert alice.post("/v1/photo-captures/video", content=webm, headers={"Content-Type": "video/webm"}).status_code == 201
     uploader = client_for(app, "s")
-    assert uploader.post("/v1/photo-captures/video", content=webm, headers={"Content-Type": "video/webm"}).status_code == 403
+    assert uploader.post("/v1/photo-captures/video", content=webm, headers={"Content-Type": "video/webm"}).status_code == 201

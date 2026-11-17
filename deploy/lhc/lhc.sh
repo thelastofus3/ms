@@ -181,7 +181,8 @@ start_api() {
 start_photos() {
   if running avatar-photos; then log "avatar-photos already running"; return; fi
   need_port avatar-photos "$PHOTO_PORT"
-  spawn avatar-photos env PHOTO_DATA_DIR="$RUN/photos" \
+  # No avatar worker runs here (GPU only in batch jobs without network): sources are saved, builds are refused up front.
+  spawn avatar-photos env PHOTO_DATA_DIR="$RUN/photos" AVATAR_BUILDS="${AVATAR_BUILDS:-off}" \
     ROOM_AUTH_API_URL="http://127.0.0.1:$API_PORT/v1/rooms/auth/me" \
     python -m uvicorn avatar_service.photo_api:create_photo_app --factory --host 127.0.0.1 --port "$PHOTO_PORT"
   wait_http avatar-photos "http://127.0.0.1:$PHOTO_PORT/health"

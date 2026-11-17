@@ -42,8 +42,27 @@ export function uploadVideo(file: File, onProgress: (fraction: number) => void):
   });
 }
 
+/** A ring of photos around the person as one multipart request (the service keeps 1-32 images, 10 MB each, 100 MB per set). */
+export function uploadPhotos(files: File[], onProgress: (fraction: number) => void): Promise<Capture> {
+  const requestedRevision = sessionRevision(), form = new FormData();
+  for (const file of files) form.append("photos", file, file.name);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", photoApi);
+    xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
+    xhr.onload = () => {
+      let body: { detail?: unknown } = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* Non-JSON errors use the generic message. */ }
+      if (xhr.status === 201) { resolve(body as Capture); return; }
+      if (xhr.status === 401) expireSession(requestedRevision);
+      reject(Error(typeof body.detail === "string" ? body.detail : xhr.status === 413 ? "The photos exceed 10 MB each or 100 MB together." : "The photos could not be uploaded."));
+    };
+    xhr.onerror = () => reject(Error("The photo upload was interrupted. Check the connection and try again."));
+    xhr.send(form);
+  });
+}
 export const photoApi = "/v1/photo-captures";
-export const MIN_AVATAR_PHOTOS = 8;
+export const MIN_AVATAR_PHOTOS = 8, RECOMMENDED_AVATAR_PHOTOS = 24, MAX_AVATAR_PHOTOS = 32, MAX_PHOTO_BYTES = 10 * 1024 ** 2, MAX_PHOTO_SET_BYTES = 100 * 1024 ** 2;
 export async function photoRequest(path = "", options?: RequestInit) {
   const requestedRevision = sessionRevision();
   const response = await fetch(photoApi + path, options);
