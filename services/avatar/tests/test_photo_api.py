@@ -239,8 +239,15 @@ def test_avatar_job_lifecycle_is_private_and_cancellable(tmp_path):
     # An active job protects its photos and has no model yet.
     assert alice.delete(path).status_code == 409
     assert alice.get(path + "/avatar/model.ply").status_code == 404
-    assert alice.post(path + "/job/cancel").json()["cancelling"] is True
+    # A queued build has not started: it is cancelled at once, without waiting for a worker that may never come.
+    cancelled = alice.post(path + "/job/cancel").json()
+    assert cancelled["state"] == "cancelled" and {stage["state"] for stage in cancelled["stages"]} == {"cancelled"}
+    assert alice.get("/v1/photo-captures").json()[0]["job"]["state"] == "cancelled"
+    # A running build is stopped by the worker: the request is recorded and shown.
     folder = tmp_path / ALICE / item["id"]
+    assert alice.post(path + "/generate").status_code == 202
+    (folder / "job.json").write_text(json.dumps({**job.json(), "state": "running"}))
+    assert alice.post(path + "/job/cancel").json()["cancelling"] is True
     assert (folder / "cancel-request").exists()
     # The worker finishes the job; the exported model then becomes downloadable to its owner only.
     (folder / "work/export").mkdir(parents=True)

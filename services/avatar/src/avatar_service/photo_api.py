@@ -369,6 +369,18 @@ def create_photo_app(data_dir=None):
         if not job or job.get("state") not in ACTIVE:
             raise HTTPException(409, "No running avatar job to cancel")
         (path / "cancel-request").touch()
+        if job.get("state") == "queued":
+            # Nothing has started yet, so there is nothing for the worker to stop: cancel at once. Without a worker (or with a
+            # busy one) a queued build otherwise stayed "waiting" forever. The request file stays for a worker claiming it now.
+            with claim_lock:
+                current = read_job(path)
+                if current and current.get("state") == "queued":
+                    current = {**current, "state": "cancelled", "finishedAt": datetime.now(timezone.utc).isoformat(),
+                               "stages": [{**stage, "state": "cancelled"} for stage in current.get("stages", [])]}
+                    temporary = path / "job.tmp"
+                    temporary.write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+                    temporary.replace(path / "job.json")
+                    return current
         return {**job, "cancelling": True}
 
     @app.get("/v1/photo-captures/{capture_id}/avatar/model.ply")
