@@ -11,6 +11,7 @@ import { GAIT_PHASE_PER_METRE, locomotionPose } from "../gaussian/rig";
 import { fetchRigPackage, RiggedAvatar, type RigPackage } from "../gaussian/riggedAvatar";
 import { PoseFollower, retargetBody, seatedPose } from "../gaussian/retarget";
 import type { BodyPose } from "./tracking/types";
+import { describeRoom, obstacleRuns, type RoomShape } from "./plyRoom";
 
 /** A mirrored body pose older than this falls back to the walk/idle animation. */
 // Long enough to bridge a missed frame at two analysed frames a second; at 0.7 s the avatar kept dropping back to its idle animation.
@@ -156,7 +157,7 @@ export class RoomRenderer {
   private pointerDown = (e: PointerEvent) => { this.down = e.button === 0 ? { x: e.clientX, y: e.clientY } : undefined; };
   private pointerUp = (e: PointerEvent) => {
     const down = this.down; this.down = undefined;
-    if (e.button !== 0 || this.tool === "review" || this.walking || !this.onPick || !this.collision || !down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+    if (e.button !== 0 || this.tool === "review" || this.walking || !this.onPick || !(this.collision ?? this.mesh) || !down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
     const rect = this.canvas.getBoundingClientRect(), ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), this.camera);
     this.scene.updateMatrixWorld(true);
@@ -169,7 +170,8 @@ export class RoomRenderer {
       else this.onStatus?.("Use Top view to place a marker on the floor.");
       return;
     }
-    const hit = ray.intersectObject(this.collision, true)[0];
+    // An imported PLY has no collision mesh: the splats themselves are picked.
+    const hit = ray.intersectObject((this.collision ?? this.mesh)!, true)[0];
     if (hit) { const p = this.root.worldToLocal(hit.point.clone()); this.onPick({ x: p.x, y: p.y, z: p.z }); }
     else this.onStatus?.("No reconstructed surface here. Try showing collision surfaces or choose another view.");
   };
@@ -259,9 +261,23 @@ export class RoomRenderer {
     this.root.add(mesh);
     this.scene.updateMatrixWorld(true);
     this.resetView();
-    this.onStatus?.(manifest.sourceType === "gaussian-ply" ? "Imported PLY ready. Drag to orbit, right-drag to pan and scroll to zoom." : manifest.ready ? "Room ready. Inspect surfaces or start walking." : "Reconstruction loaded. Calibrate scale and review the floor before walking.");
+    this.onStatus?.(manifest.sourceType === "gaussian-ply" && !manifest.ready ? "Imported PLY ready. Drag to orbit, right-drag to pan and scroll to zoom." : manifest.ready ? "Room ready. Inspect surfaces or start walking." : "Reconstruction loaded. Calibrate scale and review the floor before walking.");
   }
   showCollision(show: boolean) { if (this.collision) this.collision.visible = show; }
+  /** Floor, walking area, start point and scale of a loaded imported PLY, found in its splats (in the file's own coordinates). */
+  roomShape(): RoomShape | undefined {
+    if (!this.mesh) return;
+    const centres: number[] = [], normals: number[] = [], axis = new THREE.Vector3();
+    this.mesh.forEachSplat((_, centre, scales, quaternion, opacity) => {
+      if (opacity < 0.35) return;
+      centres.push(centre.x, centre.y, centre.z);
+      // A clearly flat splat faces along its shortest axis; the others say nothing about a surface.
+      const s = [scales.x, scales.y, scales.z], k = s.indexOf(Math.min(...s)), sorted = [...s].sort((a, b) => a - b);
+      if (sorted[0] > 0 && sorted[1] / sorted[0] > 3) { axis.set(k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0).applyQuaternion(quaternion); normals.push(axis.x, axis.y, axis.z); }
+      else normals.push(0, 0, 0);
+    });
+    return describeRoom(new Float32Array(centres), new Float32Array(normals));
+  }
   setTool(tool: CalibrationTool) { this.tool = tool; this.canvas.style.cursor = tool === "review" ? "grab" : "crosshair"; }
   preview(calibration: Calibration) {
     if (!this.manifest || this.walking) return;
@@ -289,7 +305,7 @@ export class RoomRenderer {
     this.inspect();
     const damping = this.controls.enableDamping;
     this.controls.enableDamping = false; this.controls.update();
-    if (this.manifest.sourceType === "gaussian-ply") {
+    if (this.manifest.sourceType === "gaussian-ply" && !this.manifest.ready) {
       this.camera.position.setFromMatrixPosition(new THREE.Matrix4().fromArray(this.manifest.previewCamera)).applyMatrix4(this.root.matrix);
       this.controls.target.copy(this.sceneBox().getCenter(new THREE.Vector3())); this.camera.up.set(0, 1, 0);
       if (this.camera.position.distanceToSquared(this.controls.target) < 1e-10) this.camera.position.add(new THREE.Vector3(0, 1, 2));
@@ -663,14 +679,23 @@ export class RoomRenderer {
     this.annotations.visible = !this.walking;
   }
   async walk() {
-    if (!this.manifest?.ready || !this.manifest.navigation || !this.collision) throw Error("Calibrate and review this room first");
+    if (!this.manifest?.ready || !this.manifest.navigation || !(this.collision ?? this.mesh)) throw Error("Calibrate and review this room first");
     const generation = this.generation;
     await initializePhysics();
     if (this.disposed || generation !== this.generation) return;
     this.world?.free(); this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 }); this.world.timestep = 1 / 60;
     const n = this.manifest.navigation, radius = Math.min(n.capsuleRadius, WALK_RADIUS);
     this.scene.updateMatrixWorld(true);
-    this.collision.traverse(object => {
+    // An imported PLY has no collision mesh: whatever stands in the walking band (furniture, walls) blocks, read off the
+    // splats as 10 cm columns; the walking body starts above the floor clutter anyway.
+    if (!this.collision && this.mesh) {
+      const world: number[] = [], centre = new THREE.Vector3(), toWorld = this.mesh.matrixWorld;
+      this.mesh.forEachSplat((_, c, __, ___, opacity) => { if (opacity < 0.35) return; centre.copy(c).applyMatrix4(toWorld); world.push(centre.x, centre.y, centre.z); });
+      const size = 0.1, from = WALK_CLEARANCE, to = n.capsuleHeight;
+      for (const [x, z, cells] of obstacleRuns(new Float32Array(world), n.floorY, size, from, to))
+        this.world.createCollider(RAPIER.ColliderDesc.cuboid(cells * size / 2, (to - from) / 2, size / 2).setTranslation(x + cells * size / 2, n.floorY + (from + to) / 2, z + size / 2));
+    }
+    this.collision?.traverse(object => {
       if (!(object instanceof THREE.Mesh)) return;
       const geometry = object.geometry.clone().applyMatrix4(object.matrixWorld), positions = geometry.getAttribute("position");
       const vertices = new Float32Array(positions.count * 3);

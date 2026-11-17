@@ -86,13 +86,23 @@ class RoomPermissionsTest {
         assertEquals(List.of(), result.get("files"));
         verifyNoInteractions(storage);
     }
-    @Test void importedScenesCannotBeReconstructedOrCalibrated() {
+    @Test void importedScenesCannotBeReconstructed() {
         request.setAttribute("roomAccount", new AuthService.Account(accountId.toString(), "admin", Role.ADMIN, false));
         when(db.queryForList(contains("room_jobs"), eq(uploadId), eq(accountId.toString())))
             .thenReturn(List.of(Map.of("kind", "splat", "state", "IMPORTED")));
         assertThrows(ResponseStatusException.class, () -> controller.reconstructAgain(uploadId, new RoomController.ReconstructionRequest("retry"), request));
-        assertThrows(ResponseStatusException.class, () -> controller.calibrate(uploadId, null, request));
         verifyNoInteractions(storage);
+    }
+    @Test void anUnfinishedReconstructionCannotBeCalibratedButAnImportedSceneGetsThatFar() {
+        request.setAttribute("roomAccount", new AuthService.Account(accountId.toString(), "admin", Role.ADMIN, false));
+        when(db.queryForList(contains("room_jobs"), eq(uploadId), eq(accountId.toString())))
+            .thenReturn(List.of(Map.of("kind", "capture", "state", "RUNNING")));
+        assertEquals("Wait for reconstruction to finish", assertThrows(IllegalArgumentException.class, () -> controller.calibrate(uploadId, null, request)).getMessage());
+        // An imported PLY passes the state check and goes on to read its scene (the database here is a stub, so that fails).
+        when(db.queryForList(contains("room_jobs"), eq(uploadId), eq(accountId.toString())))
+            .thenReturn(List.of(Map.of("kind", "splat", "state", "IMPORTED")));
+        var error = assertThrows(RuntimeException.class, () -> controller.calibrate(uploadId, null, request));
+        assertNotEquals("Wait for reconstruction to finish", error.getMessage());
     }
     @Test void onlyFailedCapturesContinueAndSplatOnlyAccountsCannot() {
         forbidden(() -> controller.resumeJob(uploadId, request));

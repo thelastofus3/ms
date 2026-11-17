@@ -42,13 +42,13 @@ class AlignmentQuotaTest {
                 return super.queryForList(sql,args);
             }
         };
-        db.execute("CREATE TABLE room_jobs(id uuid PRIMARY KEY,owner text,state text)");
+        db.execute("CREATE TABLE room_jobs(id uuid PRIMARY KEY,owner text,state text,kind text DEFAULT 'capture')");
         db.execute("CREATE TABLE room_tracking_cameras(id uuid,job_id uuid,revision uuid)");
         db.execute("CREATE TABLE room_camera_alignments(id uuid PRIMARY KEY,job_id uuid,camera_id uuid,camera_revision uuid,"+
                 "name text,scene_version int,image_width int,image_height int,frame_key text,manifest_key text,state text DEFAULT 'QUEUED',"+
                 "stage text DEFAULT 'queued',error text,progress text,result text,lease_token uuid,lease_until timestamp with time zone,"+
                 "frame_deleted_at timestamp,created_at timestamp DEFAULT now(),updated_at timestamp DEFAULT now(),applied_camera_id uuid)");
-        db.update("INSERT INTO room_jobs VALUES(?,?,'READY')",job,owner);
+        db.update("INSERT INTO room_jobs(id,owner,state) VALUES(?,?,'READY')",job,owner);
         var manager=new DataSourceTransactionManager(source) {
             @Override protected void doCommit(DefaultTransactionStatus status) {
                 super.doCommit(status);

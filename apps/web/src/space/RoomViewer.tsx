@@ -38,7 +38,7 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
         if (!manifest.ready && manifest.sourceType !== "gaussian-ply") throw Error("Finish the room scale, floor and walking-area setup before opening the viewer.");
         await view!.load(manifest);
         if (!active) return;
-        view!.setTool("review"); setScene(manifest); setStatus(manifest.sourceType === "gaussian-ply" ? "Imported PLY ready. Drag to orbit, right-drag to pan and scroll to zoom." : "Room ready. Start walking or explore from above.");
+        view!.setTool("review"); setScene(manifest); setStatus(manifest.sourceType === "gaussian-ply" && !manifest.ready ? "Imported PLY ready. Drag to orbit, right-drag to pan and scroll to zoom." : "Room ready. Start walking or explore from above.");
       } catch (e) { if (active) setError(e instanceof Error ? e.message : String(e)); }
       finally { if (active) setLoading(false); }
     };
@@ -49,7 +49,7 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
   }, [jobId]);
   useEffect(() => {
     setCameras([]);
-    if (!scene || scene.sourceType === "gaussian-ply") return;
+    if (!scene || !scene.ready) return;
     let active = true, timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const refresh = async () => {
@@ -73,7 +73,7 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
   }, [cameras, referenceCamera, showReferences, scene]);
   useEffect(() => {
     renderer.current?.setPeople([]); setPeople([]); setCameraCount(0); setTrackingError(""); fusion.current.reset();
-    if (!scene || !live || scene.sourceType === "gaussian-ply") return;
+    if (!scene || !live || !scene.ready) return;
     let active = true, timer: ReturnType<typeof setTimeout> | undefined, lastSuccess = Date.now();
     const controller = new AbortController();
     let remote: CameraObservation[] = [], failure = "";
@@ -123,7 +123,8 @@ export function RoomViewer({ jobId, localCamera, stopCamera }: { jobId: string; 
     } catch (e) { setError(e instanceof Error ? e.message : "Fullscreen is unavailable in this browser."); }
   };
   const local = localCamera?.jobId === jobId ? localCamera : null;
-  const imported = scene?.sourceType === "gaussian-ply" || room?.kind === "splat" || room?.state === "IMPORTED";
+  // An imported PLY stays an orbit-only scene until its room setup is saved; then it is walked and tracked like any room.
+  const imported = scene ? scene.sourceType === "gaussian-ply" && !scene.ready : room?.state === "IMPORTED";
   const estimatedCount = people.filter(person => person.positionMethod === "estimated").length;
   const referenceCameras = cameras.filter(camera => camera.points.length > 0);
   const liveStatus = !live ? "Live markers are hidden. Camera capture continues until you stop it."

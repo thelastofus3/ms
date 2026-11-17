@@ -126,6 +126,9 @@ public class AlignmentController {
         try {
             return tx.execute(status -> {
                 var scene=tracking.scene(job,owner(request),body.sceneVersion(),true);expire(job);
+                // Automatic location matches the camera image against the photos a room was reconstructed from; an imported PLY has none.
+                if("splat".equals(db.queryForObject("SELECT kind FROM room_jobs WHERE id=?",String.class,job)))
+                    throw conflict("This room was imported as a PLY file, so the camera cannot be located automatically. Match four floor points instead.");
                 if(!db.queryForList("SELECT id FROM room_camera_alignments WHERE job_id=? AND state IN ('QUEUED','RUNNING')",job).isEmpty())
                     throw conflict("A camera alignment is already running. Wait for it or cancel it before retrying.");
                 UUID revision=null;

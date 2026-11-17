@@ -83,6 +83,11 @@ public class TrackingController {
         result.put("fitErrorMeters",row.get("fit_error_meters"));result.put("updatedAt",((Timestamp)row.get("updated_at")).toInstant().toString());
         return result;
     }
+    /** Where the camera stands, worked out from the same floor matches; null when they do not describe an ordinary lens well. */
+    private String geometry(TrackingHomography.Fit fit,CameraRequest body,Scene scene) {
+        var pose=TrackingHomography.camera(fit.homography(),body.points(),body.imageWidth(),body.imageHeight(),scene.navigation().floorY());
+        return pose==null ? null:encode(pose);
+    }
     private TrackingHomography.Fit calibration(CameraRequest body) {
         if(body==null || body.name()==null || body.name().trim().isEmpty() || body.name().trim().length()>100)
             throw new IllegalArgumentException("Give this camera a name of 1 to 100 characters.");
@@ -100,23 +105,23 @@ public class TrackingController {
     @PostMapping("/cameras")
     public Map<String,Object> create(@PathVariable UUID job,@RequestBody CameraRequest body,HttpServletRequest request) {
         return tx.execute(status -> {
-            scene(job,owner(request),body==null ? null:body.sceneVersion(),true);
+            var scene=scene(job,owner(request),body==null ? null:body.sceneVersion(),true);
             var fit=calibration(body);
             if(db.queryForObject("SELECT count(*) FROM room_tracking_cameras WHERE job_id=?",Long.class,job)>=16)
                 throw new IllegalArgumentException("A room can have at most 16 tracking cameras.");
             UUID id=UUID.randomUUID(),revision=UUID.randomUUID();
-            db.update("INSERT INTO room_tracking_cameras(id,job_id,name,scene_version,revision,image_width,image_height,points,homography,fit_error_meters) VALUES(?,?,?,?,?,?,?,?::jsonb,?::jsonb,?)",
-                    id,job,body.name().trim(),body.sceneVersion(),revision,body.imageWidth(),body.imageHeight(),encode(body.points()),encode(fit.homography()),fit.fitErrorMeters());
+            db.update("INSERT INTO room_tracking_cameras(id,job_id,name,scene_version,revision,image_width,image_height,points,homography,fit_error_meters,geometry) VALUES(?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?::jsonb)",
+                    id,job,body.name().trim(),body.sceneVersion(),revision,body.imageWidth(),body.imageHeight(),encode(body.points()),encode(fit.homography()),fit.fitErrorMeters(),geometry(fit,body,scene));
             return view(camera(job,id,false));
         });
     }
     @PostMapping("/cameras/{id}")
     public Map<String,Object> update(@PathVariable UUID job,@PathVariable UUID id,@RequestBody CameraRequest body,HttpServletRequest request) {
         return tx.execute(status -> {
-            scene(job,owner(request),body==null ? null:body.sceneVersion(),true);camera(job,id,true);
+            var scene=scene(job,owner(request),body==null ? null:body.sceneVersion(),true);camera(job,id,true);
             var fit=calibration(body);
-            db.update("UPDATE room_tracking_cameras SET name=?,scene_version=?,revision=?,image_width=?,image_height=?,points=?::jsonb,homography=?::jsonb,fit_error_meters=?,geometry=NULL,active_stream=NULL,last_sequence=-1,last_captured_at=NULL,snapshot='[]',snapshot_at=NULL,updated_at=now() WHERE id=? AND job_id=?",
-                    body.name().trim(),body.sceneVersion(),UUID.randomUUID(),body.imageWidth(),body.imageHeight(),encode(body.points()),encode(fit.homography()),fit.fitErrorMeters(),id,job);
+            db.update("UPDATE room_tracking_cameras SET name=?,scene_version=?,revision=?,image_width=?,image_height=?,points=?::jsonb,homography=?::jsonb,fit_error_meters=?,geometry=?::jsonb,active_stream=NULL,last_sequence=-1,last_captured_at=NULL,snapshot='[]',snapshot_at=NULL,updated_at=now() WHERE id=? AND job_id=?",
+                    body.name().trim(),body.sceneVersion(),UUID.randomUUID(),body.imageWidth(),body.imageHeight(),encode(body.points()),encode(fit.homography()),fit.fitErrorMeters(),geometry(fit,body,scene),id,job);
             return view(camera(job,id,false));
         });
     }

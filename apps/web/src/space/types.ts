@@ -50,7 +50,8 @@ export function parseManifest(value: unknown): RoomManifest {
     const url = new URL(a.url, location.href);
     if (!["https:", "http:"].includes(url.protocol)) throw Error("Invalid asset URL");
   }
-  if (m.sourceType === "gaussian-ply" && (m.ready !== false || m.collisionReviewed !== false || m.units !== "uncalibrated" || m.navigation)) throw Error("Imported PLY scenes support uncalibrated orbit viewing only");
+  // An imported PLY is first an uncalibrated scene to orbit; once its floor, scale and walking area are saved it is a room like any other.
+  if (m.sourceType === "gaussian-ply" && !m.ready && (m.collisionReviewed !== false || m.units !== "uncalibrated" || m.navigation)) throw Error("Imported PLY scenes need their room setup saved before walking");
   const t = m.worldFromReconstruction;
   const lengths = [0, 4, 8].map(i => Math.hypot(t[i], t[i + 1], t[i + 2]));
   if (lengths[0] <= 0 || lengths.some(v => Math.abs(v / lengths[0] - 1) > 1e-5) || t[3] !== 0 || t[7] !== 0 || t[11] !== 0 || t[15] !== 1) throw Error("Room transform must have uniform scale");

@@ -284,8 +284,9 @@ public class RoomController {
         var prepared=tx.execute(status -> {
             quota.lockOwner(owner);
             var job=owned("room_jobs",id,owner(request),true);
-            if(kind(job).equals("splat")) throw new ResponseStatusException(HttpStatus.CONFLICT,"Imported PLY scenes have no reconstructed collision geometry to calibrate");
-            if(!Set.of("NEEDS_CALIBRATION","NEEDS_REVIEW","READY").contains(job.get("state"))) throw new IllegalArgumentException("Wait for reconstruction to finish");
+            // An imported PLY becomes a room the same way a reconstruction does: the browser finds its floor and obstacles in the
+            // splats themselves, so a server without a reconstruction worker can still host rooms to walk in and track people in.
+            if(!Set.of("NEEDS_CALIBRATION","NEEDS_REVIEW","READY","IMPORTED").contains(job.get("state"))) throw new IllegalArgumentException("Wait for reconstruction to finish");
             var previous=db.queryForMap("SELECT * FROM room_versions WHERE job_id=? ORDER BY version DESC LIMIT 1",id);
             int version=((Number)previous.get("version")).intValue()+1;
             String oldKey=previous.get("manifest_key").toString();
@@ -307,7 +308,7 @@ public class RoomController {
             return tx.execute(status -> {
                 quota.lockOwner(owner);
                 var job=owned("room_jobs",id,owner,true);
-                if(!Set.of("NEEDS_CALIBRATION","NEEDS_REVIEW","READY").contains(job.get("state")))
+                if(!Set.of("NEEDS_CALIBRATION","NEEDS_REVIEW","READY","IMPORTED").contains(job.get("state")))
                     throw new ResponseStatusException(HttpStatus.CONFLICT,"Room changed while preparing calibration. Retry.");
                 int latest=db.queryForObject("SELECT MAX(version) FROM room_versions WHERE job_id=?",Integer.class,id);
                 if(latest!=prepared.previousVersion()) throw new ResponseStatusException(HttpStatus.CONFLICT,"Room version changed while preparing calibration. Retry.");

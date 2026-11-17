@@ -8,7 +8,8 @@ export type CameraGeometry = {
   /** Row-major rotation: OpenCV camera right/down/forward to the metric Y-up room. */
   worldFromCamera: number[];
   intrinsics: { fx: number; fy: number; cx: number; cy: number; k1: number; k2: number };
-  source: "sfm"; inliers: number; reprojectionErrorPx: number;
+  /** "sfm": located against the reconstruction's photos; "floor-points": worked out from manually matched floor points. */
+  source: "sfm" | "floor-points"; inliers: number; reprojectionErrorPx: number;
 };
 export type CameraCalibration = {
   id: string; name: string; sceneVersion: number; revision: string;

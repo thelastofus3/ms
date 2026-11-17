@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Calibration, Point, RoomManifest } from "./types";
+import type { RoomShape } from "./plyRoom";
 
 export const freshCalibration = (): Calibration => ({ measurement: [], meters: 0, floor: [], boundary: [], spawn: null, flipUp: false, reviewed: false, obstacles: [], dimensions: [] });
 export const vector = (p: Point) => new THREE.Vector3(p.x, p.y, p.z);
@@ -19,6 +20,19 @@ export function automaticScale(m: RoomManifest): Pick<Calibration, "measurement"
   if (!p?.floorPoints || p.floorPoints.length < 2 || !height || !Number.isFinite(height) || height <= 0) return;
   const [a, b] = p.floorPoints, length = distance(a, b);
   return length > 1e-6 ? { measurement: [{ ...a }, { ...b }], meters: Number((length * CAPTURE_HEIGHT_M / height).toFixed(3)) } : undefined;
+}
+/**
+ * The setup of an imported PLY found in its splats: floor, walking area, start point and a scale (see `describeRoom`).
+ * The floor frame turns "up" towards the preview camera, which for a PLY is placed without regard to the floor, so the
+ * calibration is flipped when that disagrees with the floor found in the splats.
+ */
+export function plyCalibration(shape: RoomShape, m: RoomManifest): Calibration {
+  const c: Calibration = { ...freshCalibration(), floor: shape.floorPoints.map(p => ({ ...p })), boundary: shape.boundary.map(p => ({ ...p })), spawn: { ...shape.spawn },
+    measurement: [{ ...shape.floorPoints[0] }, { ...shape.floorPoints[1] }] };
+  c.meters = Number((distance(shape.floorPoints[0], shape.floorPoints[1]) * shape.metresPerUnit).toFixed(3));
+  const frame = floorFrame(c, m);
+  if (frame && frame.up.dot(new THREE.Vector3(...shape.up)) < 0) c.flipUp = true;
+  return c;
 }
 export function usesAutomaticScale(c: Calibration, m: RoomManifest): boolean {
   const auto = automaticScale(m);
@@ -49,8 +63,8 @@ export function floorFrame(c: Calibration, m: RoomManifest) {
   return { origin, forward, up, right, back };
 }
 export function previewTransform(c: Calibration, m: RoomManifest): THREE.Matrix4 {
-  if (m.sourceType === "gaussian-ply") return new THREE.Matrix4().fromArray(m.worldFromReconstruction);
   const frame = floorFrame(c, m);
+  if (m.sourceType === "gaussian-ply" && !frame) return new THREE.Matrix4().fromArray(m.worldFromReconstruction);
   if (frame) {
     const scale = metersPerUnit(c) ?? (m.ready ? new THREE.Vector3().setFromMatrixScale(new THREE.Matrix4().fromArray(m.worldFromReconstruction)).x : 1);
     const { right, up, back, origin } = frame;

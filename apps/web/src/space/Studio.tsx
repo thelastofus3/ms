@@ -3,7 +3,7 @@ import * as api from "./api";
 import { RoomRenderer } from "./renderer";
 import type { Calibration, CalibrationTool, Job, LiveProgress, Point, RoomManifest } from "./types";
 import { CalibrationPanel } from "./CalibrationPanel";
-import { calibrationFromManifest, distance, draftKey, floorFrame, freshCalibration as fresh, point, projectToFloor, readDraft, setFloorHeightAt, vector } from "./calibration";
+import { calibrationFromManifest, distance, draftKey, floorFrame, freshCalibration as fresh, plyCalibration, point, projectToFloor, readDraft, setFloorHeightAt, vector } from "./calibration";
 import { validatePlyUpload, validateRoomCapture } from "./uploadValidation";
 import { AccountQuota } from "./AccountQuota";
 import { RoomIllustration } from "../Icon";
@@ -15,7 +15,7 @@ const stages = [
   ["training", "Train Gaussian Splats"], ["export", "Export scene"], ["optimization", "Compress scene"],
   ["validation", "Package scene"], ["publication", "Save results"],
 ] as const;
-const stateLabels: Record<string, string> = { QUEUED: "Queued", RUNNING: "Reconstructing", NEEDS_CALIBRATION: "Set scale & floor", NEEDS_REVIEW: "Needs review", READY: "Ready to explore", IMPORTED: "Imported PLY", FAILED: "Failed", CANCELLED: "Cancelled" };
+const stateLabels: Record<string, string> = { QUEUED: "Queued", RUNNING: "Reconstructing", NEEDS_CALIBRATION: "Set scale & floor", NEEDS_REVIEW: "Needs review", READY: "Ready to explore", IMPORTED: "Imported PLY · set up", FAILED: "Failed", CANCELLED: "Cancelled" };
 const stateLabel = (state: string) => stateLabels[state] ?? state.replaceAll("_", " ").toLowerCase();
 const stepLabel = (stage: string) => stages.find(([key]) => key === stage)?.[1] ?? stage;
 function JobProgress({ job }: { job: Job }) {
@@ -198,21 +198,26 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
     finally { setLoading(false); setQuotaRevision(value => value + 1); }
   };
   const open = async (job: Job) => {
-    if (job.kind === "splat" || job.state === "IMPORTED") { location.hash = `room-viewer?job=${job.id}`; return; }
     if (!job.manifestUrl || !viewer.current) return;
     const generation = ++loadGeneration.current;
     setSelected(job.id); setScene(null); setLoading(true); setError(""); setStatus("Downloading reconstructed room…");
     history.current = []; setCanUndo(false); setDraftSaved(false); setCalibration(fresh(), false); setPendingBox(null); pendingBoxRef.current = null; setPointTarget(null);
     try {
       const manifest = await api.manifest(job.manifestUrl);
-      if (manifest.sourceType === "gaussian-ply") { location.hash = `room-viewer?job=${job.id}`; return; }
       if (generation !== loadGeneration.current) return;
       await viewer.current.load(manifest);
       if (generation !== loadGeneration.current) return;
-      const saved = calibrationFromManifest(manifest), draft = readDraft(manifest);
+      let saved = calibrationFromManifest(manifest);
+      const draft = readDraft(manifest);
+      // An imported PLY has no reconstruction to suggest a floor: it is found in the splats, and the room opens set up.
+      const shape = manifest.sourceType === "gaussian-ply" && !manifest.ready ? viewer.current.roomShape() : undefined;
+      if (shape) saved = plyCalibration(shape, manifest);
       baseline.current = JSON.stringify(saved); setCalibration(draft ?? saved, false);
       setSelection(manifest.ready ? "review" : "floor");
       setScene(manifest); setOverlay(false);
+      if (manifest.sourceType === "gaussian-ply" && !manifest.ready) setStatus(shape
+        ? `Floor, walking area and start point were found in the scan. ${shape.scaleFrom === "units" ? "Its units are already metres." : "The size is estimated from the ceiling height (about 2.6 m); measure one real distance for an exact scale."} Check each step, then save to walk and track people.`
+        : "The floor could not be found in this scan. Choose three points on the floor, then mark the walking area.");
     } catch (e) { if (generation === loadGeneration.current && !(e instanceof DOMException && e.name === "AbortError")) { setScene(null); setError(e instanceof Error ? e.message : String(e)); } }
     finally { if (generation === loadGeneration.current) setLoading(false); }
   };
@@ -305,7 +310,8 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
           const percent = observation?.stage === j.stage ? observation.percent : null;
           return <article className={j.id === selected ? "selected" : ""} key={j.id}>
             <button className="room-job-row" aria-pressed={j.id === selected} onClick={() => {
-              if (["READY", "IMPORTED"].includes(j.state) && j.manifestUrl) location.hash = `room-viewer?job=${j.id}`;
+              // An imported PLY opens in room setup first: the floor and walking area found in it are checked and saved there.
+              if (j.state === "READY" && j.manifestUrl) location.hash = `room-viewer?job=${j.id}`;
               else if (j.manifestUrl) void open(j);
               else { ++loadGeneration.current; setSelected(j.id); setScene(null); setLoading(false); inspect(); setStatus(`${j.name} · ${stepLabel(j.stage)}`); }
             }} disabled={loading}>
@@ -313,10 +319,10 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
               {j.state === "RUNNING" && <small>{stepLabel(j.stage)}{percent !== null ? ` · ${percent}%` : ""}</small>}
               {j.version && <small>Scene version {j.version}</small>}
             </button>
-            {["READY", "IMPORTED"].includes(j.state) && <div className="room-job-actions"><a href={`#room-viewer?job=${j.id}`}>Explore</a>{j.state === "READY" && captureAllowed && <button disabled={loading} onClick={() => {
+            {["READY", "IMPORTED"].includes(j.state) && <div className="room-job-actions"><a href={`#room-viewer?job=${j.id}`}>Explore</a>{(j.state === "IMPORTED" || j.state === "READY" && (captureAllowed || j.kind === "splat")) && <button disabled={loading} onClick={() => {
               if (new URLSearchParams(location.hash.split("?")[1] || "").get("job") === j.id) void open(j);
               else location.hash = `rooms?job=${j.id}`;
-            }}>Edit setup</button>}</div>}
+            }}>{j.state === "IMPORTED" ? "Set up room" : "Edit setup"}</button>}</div>}
           </article>;
         })}</div>
         </div>
@@ -329,7 +335,7 @@ export function RoomStudio({ captureAllowed }: { captureAllowed: boolean }) {
           {["QUEUED", "RUNNING"].includes(selectedJob.state) && <button disabled={selectedJob.cancel_requested} onClick={() => { void api.cancel(selectedJob.id).then(result => { setJobs(current => current.map(job => job.id === result.id ? result : job)); }).catch(e => setError(e instanceof Error ? e.message : String(e))).finally(() => setQuotaRevision(value => value + 1)); }}>{selectedJob.cancel_requested ? "Cancellation requested" : selectedJob.kind === "splat" ? "Cancel import" : "Cancel reconstruction"}</button>}
           {captureAllowed && selectedJob.kind !== "splat" && selectedJob.state === "FAILED" && <><button className="room-primary" disabled={loading || busy || !!service} onClick={() => void resume(selectedJob)}>Continue reconstruction</button><p className="room-help">Picks up from the steps that already finished (cameras, depth, training checkpoints) instead of starting over. If it stops at the same place again, the capture itself needs changing: see the message above.</p></>}
           {captureAllowed && selectedJob.kind !== "splat" && selectedJob.state !== "IMPORTED" && !["QUEUED", "RUNNING"].includes(selectedJob.state) && <><button disabled={loading || busy || !!service} onClick={() => void reconstructAgain(selectedJob)}>{selectedJob.state === "FAILED" ? "Start over from the upload" : "Reconstruct again"}</button><p className="room-help">Uses the saved photos or video with the current pipeline and creates a separate result. The new scene needs its own scale and floor setup.</p></>}
-          {selectedJob.manifestUrl && !scene && <button disabled={loading} onClick={() => void open(selectedJob)}>{loading ? "Opening room…" : selectedJob.kind === "splat" ? "Open imported scene" : "Open reconstructed room"}</button>}
+          {selectedJob.manifestUrl && !scene && <button disabled={loading} onClick={() => void open(selectedJob)}>{loading ? "Opening room…" : selectedJob.kind === "splat" ? selectedJob.state === "IMPORTED" ? "Set up as a room" : "Open imported room" : "Open reconstructed room"}</button>}
         </section>}
         <div className={`room-view${scene ? "" : " room-view-empty"}`} style={{ visibility: scene ? "visible" : "hidden" }} ref={host} />
         {scene && <div className="room-pick-hint" role="status"><strong>{pickHint}</strong><span>Drag to orbit · Right-drag to pan · Scroll to zoom</span></div>}

@@ -60,6 +60,70 @@ final class TrackingHomography {
         return new Fit(h,error);
     }
 
+    /**
+     * The camera behind a floor mapping. Feet on the floor need only the mapping, but a person whose feet are hidden is placed by
+     * the size of their body along a line of sight, and two cameras are combined where their lines cross: both need to know
+     * where the camera is and which way it looks. A mapping of one plane fixes that for an ordinary lens (square pixels, centre
+     * in the middle, no distortion); a result that does not reproduce the matches, or puts the camera under the floor, is dropped.
+     */
+    static Map<String,Object> camera(double[] homography,List<Pair> points,int width,int height,double floorY) {
+        double[] g=inverse(homography);
+        if(g==null)return null;
+        double cx=width/2.0,cy=height/2.0;
+        // Columns of the floor-to-pixel mapping: the floor's x axis, its z axis, and the floor origin.
+        double[][] m=new double[3][];
+        for(int c=0;c<3;c++) { double w=g[6+c];m[c]=new double[]{g[c]*width-cx*w,g[3+c]*height-cy*w,w}; }
+        // The two floor axes are perpendicular and equally long in space; both conditions are linear in 1/f^2.
+        double n1=m[0][0]*m[1][0]+m[0][1]*m[1][1],d1=m[0][2]*m[1][2];
+        double n2=m[0][0]*m[0][0]+m[0][1]*m[0][1]-m[1][0]*m[1][0]-m[1][1]*m[1][1],d2=m[0][2]*m[0][2]-m[1][2]*m[1][2];
+        double focalSquared=-(n1*n1+n2*n2)/(n1*d1+n2*d2);
+        if(!Double.isFinite(focalSquared) || focalSquared<=0)return null;
+        double f=Math.sqrt(focalSquared),longer=Math.max(width,height);
+        if(f<0.25*longer || f>6*longer)return null;
+        double[][] v=new double[3][];
+        for(int c=0;c<3;c++)v[c]=new double[]{m[c][0]/f,m[c][1]/f,m[c][2]};
+        double scale=(norm(v[0])+norm(v[1]))/2;
+        if(!(scale>1e-12))return null;
+        if(v[2][2]<0)scale=-scale;   // the floor lies in front of the camera
+        for(double[] column:v)for(int i=0;i<3;i++)column[i]/=scale;
+        double[] x=unit(v[0]);
+        if(x==null)return null;
+        double along=dot(v[1],x);
+        double[] z=unit(new double[]{v[1][0]-along*x[0],v[1][1]-along*x[1],v[1][2]-along*x[2]});
+        if(z==null)return null;
+        double[] y={z[1]*x[2]-z[2]*x[1],z[2]*x[0]-z[0]*x[2],z[0]*x[1]-z[1]*x[0]};
+        double[] t={v[2][0]-floorY*y[0],v[2][1]-floorY*y[1],v[2][2]-floorY*y[2]};
+        double[] centre={-dot(x,t),-dot(y,t),-dot(z,t)};
+        if(!finite(centre) || centre[1]-floorY<0.1 || centre[1]-floorY>6)return null;
+        double squared=0;
+        for(var p:points) {
+            double wx=p.world().x(),wz=p.world().z();
+            double px=wx*x[0]+floorY*y[0]+wz*z[0]+t[0],py=wx*x[1]+floorY*y[1]+wz*z[1]+t[1],pz=wx*x[2]+floorY*y[2]+wz*z[2]+t[2];
+            if(pz<=1e-6)return null;
+            double du=f*px/pz+cx-p.image().x()*width,dv=f*py/pz+cy-p.image().y()*height;
+            squared+=du*du+dv*dv;
+        }
+        double error=Math.sqrt(squared/points.size());
+        if(!Double.isFinite(error) || error>Math.max(8,0.012*longer))return null;
+        var result=new LinkedHashMap<String,Object>();
+        result.put("center",Map.of("x",centre[0],"y",centre[1],"z",centre[2]));
+        // Rows are the room's axes seen from the camera: the camera's right/down/forward to the Y-up room.
+        result.put("worldFromCamera",List.of(x[0],x[1],x[2],y[0],y[1],y[2],z[0],z[1],z[2]));
+        result.put("intrinsics",Map.of("fx",f,"fy",f,"cx",cx,"cy",cy,"k1",0.0,"k2",0.0));
+        result.put("source","floor-points");result.put("inliers",points.size());result.put("reprojectionErrorPx",error);
+        return result;
+    }
+    private static double[] inverse(double[] a) {
+        double d=determinant(a);
+        if(!Double.isFinite(d) || Math.abs(d)<1e-12)return null;
+        return new double[]{(a[4]*a[8]-a[5]*a[7])/d,(a[2]*a[7]-a[1]*a[8])/d,(a[1]*a[5]-a[2]*a[4])/d,
+                (a[5]*a[6]-a[3]*a[8])/d,(a[0]*a[8]-a[2]*a[6])/d,(a[2]*a[3]-a[0]*a[5])/d,
+                (a[3]*a[7]-a[4]*a[6])/d,(a[1]*a[6]-a[0]*a[7])/d,(a[0]*a[4]-a[1]*a[3])/d};
+    }
+    private static double dot(double[] a,double[] b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+    private static double norm(double[] a) { return Math.sqrt(dot(a,a)); }
+    private static double[] unit(double[] a) { double l=norm(a);return l>1e-12 ? new double[]{a[0]/l,a[1]/l,a[2]/l}:null; }
+
     private static Normalized normalize(double[][] values) {
         double x=0,y=0;
         for (var p:values) { x+=p[0];y+=p[1]; } x/=values.length;y/=values.length;
