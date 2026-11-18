@@ -7,6 +7,7 @@
 #   bash deploy/lhc/lhc.sh start | stop | restart | status
 #   bash deploy/lhc/lhc.sh logs <postgres|minio|room-api|avatar-photos|nginx>
 #   bash deploy/lhc/lhc.sh update    git pull + build + restart
+#   bash deploy/lhc/lhc.sh gpu-setup one-time: env + model weights of the reconstruction/avatar workers (GPU batch jobs)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -19,6 +20,12 @@ ENVFILE="$RUN/ms.env"
 JAR="$REPO/services/space-api/target/space-api-0.1.0.jar"
 DIST="$REPO/apps/web/dist"
 MINIO_VERSION="2025.10.15.17.29.55"   # same MinIO release compose builds (RELEASE.2025-10-15T17-29-55Z)
+# The graphics card is visible only to batch jobs (no network, data disk only, 8 h, 12 GB RAM): the workers run here and hand
+# each GPU command to a job (services/space-worker/room_worker/gpu_batch.py). Their tools live in their own env.
+GPU_ENV="$CONDA/envs/room-gpu"
+GPU_DIR="$DATA/gpu"
+GPU_STATE="/state/$(basename "$DATA")"
+GPU_WORKERS="room-worker room-progress room-localizer avatar-worker"
 
 log() { printf '\033[1m[lhc]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[lhc] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -187,6 +194,77 @@ start_photos() {
   wait_http avatar-photos "http://127.0.0.1:$PHOTO_PORT/health"
 }
 
+gpu_ready() { [ "${GPU_JOBS:-yes}" = yes ] && [ -x "$GPU_ENV/bin/ns-train" ] && [ -f "$RUN/models/ready" ]; }
+
+gpu_vars() {  # environment of the workers; database and storage secrets never reach the job scripts (gpu_batch.PASSED)
+  GPU_VARS=(PATH="$GPU_ENV/bin:$PATH" PYTHONPATH="$REPO/services/space-worker" PYTHONUNBUFFERED=1 QT_QPA_PLATFORM=offscreen
+    ROOM_DATABASE_DSN="postgresql://rooms:$ROOM_DATABASE_PASSWORD@127.0.0.1:$PG_PORT/rooms"
+    ROOM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" ROOM_SCRATCH="$RUN/scratch" ROOM_MAX_SCRATCH_GIB="${ROOM_MAX_SCRATCH_GIB:-90}"
+    ROOM_GPU_BATCH="$GPU_DIR" ROOM_GPU_STATE="$GPU_STATE" TORCH_HOME="$RUN/models/torch" U2NET_HOME="$RUN/models/rembg")
+}
+
+cmd_gpu_setup() {
+  # Run from SSH (network). The session has no card, so conda is told which CUDA the server's driver runs (13.0 runs 11.8 builds).
+  export CONDA_OVERRIDE_CUDA=11.8
+  local py="$GPU_ENV/bin/python" pin="$TMPDIR/room-gpu-constraints.txt"
+  if [ ! -x "$GPU_ENV/bin/colmap" ]; then
+    log "Creating $GPU_ENV: Python 3.10, COLMAP 3.9.1 with CUDA, ffmpeg (the tools of the room-worker image)"
+    "$CONDA/bin/conda" create -y -p "$GPU_ENV" --override-channels -c conda-forge python=3.10 "colmap=3.9.1=gpu*" "ffmpeg>=6,<7" git
+  fi
+  printf 'torch==2.1.2+cu118\ntorchvision==0.16.2+cu118\nnumpy==1.26.4\nopencv-python-headless==4.10.0.84\n' >"$pin"
+  "$py" -m pip install --quiet "pip<25"
+  log "Installing PyTorch (CUDA 11.8), nerfstudio, gsplat and the worker's packages"
+  "$py" -m pip install --quiet torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+  "$py" -m pip install --quiet -c "$pin" --extra-index-url https://docs.gsplat.studio/whl/pt21cu118 \
+    -r "$REPO/services/space-worker/requirements.txt"
+  "$py" -m pip uninstall -y -q pyceres 2>/dev/null || true   # conflicts with pycolmap 3.11 (as in the image)
+  # Avatar stages: masks run on the CPU on purpose (masks.py), so the CPU onnxruntime is enough.
+  "$py" -m pip install --quiet -c "$pin" "rembg==2.0.59" "onnxruntime==1.18.1" "mediapipe==0.10.14" tensorboard
+  log "Downloading model weights into $RUN/models (the jobs have no network)"
+  mkdir -p "$RUN/models"
+  TORCH_HOME="$RUN/models/torch" "$py" "$REPO/services/space-worker/room_worker/localizer_models.py" --download
+  TORCH_HOME="$RUN/models/torch" U2NET_HOME="$RUN/models/rembg" "$py" - <<'EOF'
+from rembg import new_session
+for name in ("u2net_human_seg", "birefnet-general"):
+    new_session(name, providers=["CPUExecutionProvider"])
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+LearnedPerceptualImagePatchSimilarity(normalize=True)
+import mediapipe as mp
+for complexity in (0, 1, 2):
+    mp.solutions.pose.Pose(static_image_mode=True, model_complexity=complexity).close()
+print("models ready")
+EOF
+  log "Checking the card from a batch job"
+  mkdir -p "$GPU_DIR"
+  gpu_vars
+  env "${GPU_VARS[@]}" python - <<'EOF'
+from pathlib import Path
+from room_worker import gpu_batch
+import os
+log = Path(os.environ["ROOM_GPU_BATCH"]) / "check.log"
+log.unlink(missing_ok=True)
+check = ("import torch, gsplat; from gsplat.cuda._backend import _C; assert torch.cuda.is_available() and _C is not None; "
+         "x = torch.rand(4, device='cuda'); print('torch', torch.__version__, torch.cuda.get_device_name(0), 'gsplat', gsplat.__version__)")
+result = gpu_batch.run(["bash", "-c", f"python -c \"{check}\" && colmap -h | head -2 && ns-train --help >/dev/null && echo tools ok"],
+                       Path.cwd(), log, waiting=lambda reason: print("waiting for the card:", reason))
+print(log.read_text())
+raise SystemExit(result.returncode)
+EOF
+  touch "$RUN/models/ready"
+  log "GPU workers are ready; they start with: bash $SELF restart"
+}
+
+start_gpu_workers() {
+  if ! gpu_ready; then log "GPU workers off (GPU_JOBS=${GPU_JOBS:-yes}; set up with: bash $SELF gpu-setup)"; return; fi
+  mkdir -p "$RUN/scratch" "$GPU_DIR"
+  gpu_vars
+  running room-worker || spawn room-worker env "${GPU_VARS[@]}" python -m room_worker
+  running room-progress || spawn room-progress env "${GPU_VARS[@]}" python "$REPO/services/space-progress/monitor.py"
+  running room-localizer || spawn room-localizer env "${GPU_VARS[@]}" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 python -m room_worker.localizer
+  running avatar-worker || spawn avatar-worker env "${GPU_VARS[@]}" PHOTO_DATA_DIR="$RUN/photos" \
+    AVATAR_TRAIN_STEPS="${AVATAR_TRAIN_STEPS:-15000}" python "$REPO/services/avatar/multiview/avatar_worker.py"
+}
+
 nginx_cmd() { nginx -p "$RUN/nginx" -c "$RUN/nginx/nginx.conf" -e "$RUN/logs/nginx.log" "$@"; }
 
 start_nginx() {
@@ -218,6 +296,7 @@ cmd_start() {
   start_minio
   start_api
   start_photos
+  start_gpu_workers
   start_nginx
   cmd_status
 }
@@ -234,6 +313,8 @@ stop_one() {
 }
 
 cmd_stop() {
+  local worker
+  for worker in $GPU_WORKERS; do stop_one "$worker"; done
   stop_one nginx
   stop_one avatar-photos
   stop_one room-api
@@ -243,10 +324,11 @@ cmd_stop() {
 
 cmd_status() {
   local s
-  for s in postgres minio room-api avatar-photos nginx; do
+  for s in postgres minio room-api avatar-photos $GPU_WORKERS nginx; do
     if running "$s"; then printf '  %-14s \033[32mrunning\033[0m\n' "$s"; else printf '  %-14s \033[31mstopped\033[0m\n' "$s"; fi
   done
   printf '  %-14s %s\n' "web health" "$(curl -fsS --max-time 3 "http://127.0.0.1:$WEB_PORT/health/" 2>&1 || true)"
+  printf '  %-14s %s\n' "last GPU job" "$(tr -d '\n ' <"$GPU_DIR/status.json" 2>/dev/null || echo none)"
   printf '  %-14s %s\n' "registration" "$([ "$ALLOW_REGISTRATION" = yes ] && echo open || echo closed)"
   echo
   echo "  Test from your PC:  ssh -N -L $WEB_PORT:127.0.0.1:$WEB_PORT lhc-student2   then open http://localhost:$WEB_PORT"
@@ -261,7 +343,8 @@ case "${1:-}" in
   restart) load_env; cmd_stop; cmd_start ;;
   status)  load_env; cmd_status ;;
   update)  load_env; git -C "$REPO" pull --ff-only; cmd_build; cmd_stop; cmd_start ;;
-  logs)    [ -n "${2:-}" ] || die "Usage: bash $SELF logs <postgres|minio|room-api|avatar-photos|nginx>"
+  gpu-setup) load_env; cmd_gpu_setup ;;
+  logs)    [ -n "${2:-}" ] || die "Usage: bash $SELF logs <postgres|minio|room-api|avatar-photos|nginx|${GPU_WORKERS// /|}>"
            tail -n 100 -f "$RUN/logs/$2.log" ;;
   *)       sed -n '2,10p' "$SELF"; exit 1 ;;
 esac

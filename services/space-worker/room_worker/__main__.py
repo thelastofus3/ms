@@ -10,6 +10,7 @@ from botocore.config import Config
 from .settings import BUCKET, SCRATCH
 from .jobs import claim, Lease, Stopped, StorageQuotaExceeded, confirm_output, fail
 from .pipeline import reconstruct
+from . import gpu_batch
 from .output_quota import reserve_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -18,7 +19,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 def main():
     import torch
     missing = [name for name in ("colmap", "ffmpeg", "ffprobe", "ns-train", "ns-export") if not shutil.which(name)]
-    if missing or not torch.cuda.is_available():
+    # With batch jobs (LHC) only the job sees the card; this process prepares, uploads and keeps the lease.
+    if missing or not (torch.cuda.is_available() or gpu_batch.enabled()):
         raise RuntimeError(f"GPU worker requires CUDA and reconstruction tools; missing: {missing}")
     SCRATCH.mkdir(parents=True, exist_ok=True)
     storage = boto3.client("s3", endpoint_url=os.environ.get("ROOM_S3_ENDPOINT", "http://room-storage:9000"),
@@ -26,7 +28,7 @@ def main():
                           aws_secret_access_key=os.environ.get("ROOM_S3_SECRET_KEY", "rooms-local-secret"),
                           region_name="us-east-1", config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
     storage.bucket = BUCKET
-    logging.info("GPU worker ready: %s; waiting for room jobs", torch.cuda.get_device_name(0))
+    logging.info("GPU worker ready: %s; waiting for room jobs", f"batch jobs in {gpu_batch.directory()}" if gpu_batch.enabled() else torch.cuda.get_device_name(0))
     # Shared with the avatar worker: two jobs on one 6 GB card stall each other and exhaust RAM, so the later one waits in its queue.
     gpu = open("/gpu-lock/gpu.lock", "a") if os.path.isdir("/gpu-lock") else None
     while True:

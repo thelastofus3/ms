@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 from .commands import run
+from . import gpu_batch
 from .preprocess import prepare
 from .geometry import select_room_model, sanitize_camera_depths, build_collision
 from .export import compress, digest
@@ -194,7 +195,7 @@ def reconstruct(job, storage, work: Path, lease):
     lease.stage("validation", 0)
     report["seconds"] = round(time.monotonic()-started, 2)
     import torch
-    report["gpu"] = {"name": torch.cuda.get_device_name(0), "vramBytes": torch.cuda.get_device_properties(0).total_memory}
+    report["gpu"] = gpu_batch.device() if gpu_batch.enabled() else {"name": torch.cuda.get_device_name(0), "vramBytes": torch.cuda.get_device_properties(0).total_memory}
     (output/"quality-report.json").write_text(json.dumps(report, indent=2))
     assets = {}
     asset_files = {"splats": "room.spz", "source": "room.ply", "collision": "collision.glb", "report": "quality-report.json"}

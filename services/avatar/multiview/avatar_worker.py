@@ -31,6 +31,10 @@ SCRIPTS = {
     "rig": lambda video: ["rig.py"],
 }
 LOGGER = logging.getLogger("avatar-worker")
+# LHC: stages run as GPU batch jobs (room_worker/gpu_batch.py, on PYTHONPATH there); elsewhere directly.
+gpu_batch = None
+if os.environ.get("ROOM_GPU_BATCH"):
+    from room_worker import gpu_batch
 
 
 def now():
@@ -66,21 +70,17 @@ def run_stage(job, path, index, log):
     environment = {**os.environ, "AVATAR_INPUT": str(source), "AVATAR_WORK": str(work), "PYTHONUNBUFFERED": "1"}
     stage.update(state="running", startedAt=now(), progress=0.0)
     job.update(stage=stage_id); write(path, job)
-    process = subprocess.Popen([sys.executable, str(CODE / command[0]), *command[1:]], cwd=work, env=environment,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     error, last_write = "", 0.
-    for line in process.stdout:
+    def handle(line):
+        nonlocal error, last_write
         log.write(line); log.flush()
-        if (capture / "cancel-request").exists():
-            process.kill(); process.wait()
-            raise InterruptedError("Cancelled")
         if line.startswith("ERROR "):
             error = line[6:].strip()
         if line.startswith("PROGRESS "):
             try:
                 update = json.loads(line[9:])
             except ValueError:
-                continue
+                return
             if update.get("fraction") is not None:
                 stage["progress"] = float(update["fraction"])
             stage["message"] = update.get("message", stage.get("message", ""))
@@ -88,10 +88,55 @@ def run_stage(job, path, index, log):
             # Bound status writes; the final 1.0 update is always written.
             if time.monotonic() - last_write > 1 or stage["progress"] >= 1:
                 write(path, job); last_write = time.monotonic()
-    if process.wait():
-        raise RuntimeError(error or f"{stage['label']} failed (exit code {process.returncode}). See the job log.")
+    arguments = [sys.executable, str(CODE / command[0]), *command[1:]]
+    if gpu_batch:
+        returncode = run_batch(arguments, work, stage_id, environment, handle, capture, stage, lambda: write(path, job))
+    else:
+        process = subprocess.Popen(arguments, cwd=work, env=environment,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in process.stdout:
+            if (capture / "cancel-request").exists():
+                process.kill(); process.wait()
+                raise InterruptedError("Cancelled")
+            handle(line)
+        returncode = process.wait()
+    if returncode:
+        raise RuntimeError(error or f"{stage['label']} failed (exit code {returncode}). See the job log.")
     stage.update(state="done", progress=1.0, finishedAt=now())
     write(path, job)
+
+
+def run_batch(arguments, work, stage_id, environment, handle, capture, stage, save):
+    """A stage as a GPU batch job (LHC: only such a job sees the card, without network). Its output goes to a file that is
+    read like the pipe above; a cancel request stops the job."""
+    output, position, pending = work / f"stage-{stage_id}.log", 0, b""
+    output.unlink(missing_ok=True)
+    def drain(final=False):
+        nonlocal position, pending
+        if output.exists():
+            with output.open("rb") as source:
+                source.seek(position); pending += source.read(); position = source.tell()
+        *lines, pending = pending.split(b"\n")
+        if final and pending:
+            lines, pending = lines + [pending], b""
+        for line in lines:
+            handle(line.decode("utf-8", errors="replace") + "\n")
+    def tick():
+        drain()
+        if (capture / "cancel-request").exists():
+            raise InterruptedError("Cancelled")
+    def waiting(reason):
+        message = "Waiting for the shared graphics card" if reason == "busy" else "Waiting for the room build to free the graphics card"
+        if stage.get("message") != message:
+            stage["message"] = message; save()
+    passed = {key: environment[key] for key in ("AVATAR_INPUT", "AVATAR_WORK", "AVATAR_TRAIN_STEPS") if key in environment}
+    result = gpu_batch.run(arguments, work, output, env=passed, tick=tick, waiting=waiting)
+    drain(final=True)
+    if result.timed_out:
+        raise RuntimeError("This step reached the 8 hour limit of the shared graphics card.")
+    if result.out_of_memory:
+        raise RuntimeError("This step ran out of memory (12 GB per GPU job).")
+    return result.returncode
 
 
 def process(path, job):
