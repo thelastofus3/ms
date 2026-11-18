@@ -226,15 +226,18 @@ cmd_gpu_setup() {
   "$py" -m pip install --quiet -c "$pin" "rembg==2.0.59" "onnxruntime==1.18.1" "mediapipe==0.10.14" tensorboard
   log "Downloading model weights into $RUN/models (the jobs have no network)"
   mkdir -p "$RUN/models"
-  TORCH_HOME="$RUN/models/torch" U2NET_HOME="$RUN/models/rembg" "$py" - <<'EOF'
-from rembg import new_session
-for name in ("u2net_human_seg", "birefnet-general"):
-    new_session(name, providers=["CPUExecutionProvider"])
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-LearnedPerceptualImagePatchSimilarity(normalize=True)
-import mediapipe as mp
-for complexity in (0, 1, 2):
-    mp.solutions.pose.Pose(static_image_mode=True, model_complexity=complexity).close()
+  # Files only: loading a model here starts a thread per server core, and this session has 1 CPU and 128 tasks (an onnxruntime
+  # session hung for two hours).
+  OMP_NUM_THREADS=1 TORCH_HOME="$RUN/models/torch" U2NET_HOME="$RUN/models/rembg" "$py" - <<'EOF'
+from rembg.sessions import sessions_class
+for session in sessions_class:
+    if session.name() in ("u2net_human_seg", "birefnet-general"):   # masks.py
+        session.download_models()
+import torch
+from torchvision.models import AlexNet_Weights   # LPIPS (train.py) wraps torchvision's AlexNet
+torch.hub.load_state_dict_from_url(AlexNet_Weights.DEFAULT.url, map_location="cpu")
+from mediapipe.python.solutions import download_utils   # skeleton.py: Pose(model_complexity=2)
+download_utils.download_oss_model("mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite")
 print("models ready")
 EOF
   log "Checking the card from a batch job"
