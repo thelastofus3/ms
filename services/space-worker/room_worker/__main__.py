@@ -9,7 +9,6 @@ import boto3
 from botocore.config import Config
 from .settings import BUCKET, SCRATCH
 from .jobs import claim, Lease, Stopped, StorageQuotaExceeded, confirm_output, fail
-from .pipeline import reconstruct
 from . import gpu_batch
 from .output_quota import reserve_files
 
@@ -17,18 +16,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 
 def main():
-    import torch
     missing = [name for name in ("colmap", "ffmpeg", "ffprobe", "ns-train", "ns-export") if not shutil.which(name)]
-    # With batch jobs (LHC) only the job sees the card; this process prepares, uploads and keeps the lease.
-    if missing or not (torch.cuda.is_available() or gpu_batch.enabled()):
+    if gpu_batch.enabled():
+        # LHC: only batch jobs see the card. This process downloads, keeps the lease and uploads; remote runs the pipeline.
+        from .remote import reconstruct, TRANSFER
+        device = f"batch jobs in {gpu_batch.directory()}"
+    else:
+        import torch
+        from .pipeline import reconstruct
+        TRANSFER, device = None, torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    if missing or not device:
         raise RuntimeError(f"GPU worker requires CUDA and reconstruction tools; missing: {missing}")
+    transfer = {"Config": TRANSFER} if TRANSFER else {}
     SCRATCH.mkdir(parents=True, exist_ok=True)
     storage = boto3.client("s3", endpoint_url=os.environ.get("ROOM_S3_ENDPOINT", "http://room-storage:9000"),
                           aws_access_key_id=os.environ.get("ROOM_S3_ACCESS_KEY", "rooms-local"),
                           aws_secret_access_key=os.environ.get("ROOM_S3_SECRET_KEY", "rooms-local-secret"),
                           region_name="us-east-1", config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))
     storage.bucket = BUCKET
-    logging.info("GPU worker ready: %s; waiting for room jobs", f"batch jobs in {gpu_batch.directory()}" if gpu_batch.enabled() else torch.cuda.get_device_name(0))
+    logging.info("GPU worker ready: %s; waiting for room jobs", device)
     # Shared with the avatar worker: two jobs on one 6 GB card stall each other and exhaust RAM, so the later one waits in its queue.
     gpu = open("/gpu-lock/gpu.lock", "a") if os.path.isdir("/gpu-lock") else None
     while True:
@@ -70,7 +76,7 @@ def main():
                 lease.progress("Save results", "Uploading reconstructed assets", 0, total_bytes, "bytes uploaded", force=True)
                 for path in paths:
                     lease.check()
-                    storage.upload_file(str(path), BUCKET, prefix+path.name, Callback=upload_progress)
+                    storage.upload_file(str(path), BUCKET, prefix+path.name, Callback=upload_progress, **transfer)
                     confirm_output(job, prefix+path.name, path.stat().st_size)
                 lease.publish(prefix+"manifest.json", report)
                 # A published room needs only dataset/ (camera alignment reads its COLMAP model). Depth maps, decoded frames and
@@ -93,7 +99,7 @@ def main():
                             paths = sorted(log for log in logs.glob("*.log") if log.stat().st_size > 0)
                             reserve_files(job, paths, prefix+"logs/", allocations)
                             for log in paths:
-                                storage.upload_file(str(log), BUCKET, prefix+"logs/"+log.name)
+                                storage.upload_file(str(log), BUCKET, prefix+"logs/"+log.name, **transfer)
                                 confirm_output(job, prefix+"logs/"+log.name, log.stat().st_size)
                             if paths:
                                 diagnostics["logPrefix"] = prefix+"logs/"

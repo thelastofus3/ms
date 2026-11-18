@@ -111,7 +111,8 @@ class Lease:
         if self.stop.is_set():
             raise Stopped(self.reason)
 
-    def stage(self, name, progress):
+    def stage(self, name, progress, announce=True):
+        """announce=False: the stage of a batch job, whose own live progress must not be replaced (remote.py)."""
         self.check()
         self.current_stage = name
         self.stage_started = time.time()
@@ -122,7 +123,8 @@ class Lease:
             if not row:
                 self.stop.set()
                 self.check()
-        self.progress(name.replace("_", " ").capitalize(), "Starting this step", force=True)
+        if announce:
+            self.progress(name.replace("_", " ").capitalize(), "Starting this step", force=True)
 
     def progress(self, label, activity, completed=None, total=None, unit=None, force=False):
         """Publish bounded work counters without a DB round trip for every frame or upload chunk."""

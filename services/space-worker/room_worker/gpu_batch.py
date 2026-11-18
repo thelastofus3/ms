@@ -43,16 +43,6 @@ class Result:
         return self.outcome == "oom-kill"
 
 
-def device():
-    """Name and memory of the card the last job saw, for reports (the worker's own process has no card)."""
-    root = directory()
-    try:
-        name, mib = (root / "device.csv").read_text().strip().splitlines()[0].rsplit(",", 1)
-        return {"name": name.strip(), "vramBytes": int(float(mib)) * 1024**2}
-    except (TypeError, OSError, ValueError, IndexError):
-        return {"name": "batch GPU", "vramBytes": 0}
-
-
 def _script(root, args, cwd, log, env):
     values = {key: value for key, value in os.environ.items() if PASSED.match(key)}
     values.update({key: str(value) for key, value in (env or {}).items()})
@@ -60,7 +50,6 @@ def _script(root, args, cwd, log, env):
     lines = ["#!/bin/bash", "# Written by the room/avatar worker for one command; replaced by the next one."]
     lines += [f"export {key}={shlex.quote(value)}" for key, value in sorted(values.items())]
     lines += [f"cd {shlex.quote(str(cwd))} || exit 97",
-              f"nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits > {shlex.quote(str(root / 'device.csv'))} 2>/dev/null",
               f"echo \"== batch job $(date -Is) on $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)\" >> {shlex.quote(str(log))}",
               f"exec {' '.join(shlex.quote(str(arg)) for arg in args)} >> {shlex.quote(str(log))} 2>&1", ""]
     temporary = root / "run.tmp"
