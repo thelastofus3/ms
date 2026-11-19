@@ -215,8 +215,9 @@ cmd_gpu_setup() {
     log "Creating $GPU_ENV: Python 3.10, COLMAP 3.9.1 with CUDA, ffmpeg (the tools of the room-worker image)"
     "$CONDA/bin/conda" create -y -p "$GPU_ENV" --override-channels -c conda-forge python=3.10 "colmap=3.9.1=gpu*" "ffmpeg>=6,<7" git
   fi
-  printf 'torch==2.1.2+cu118\ntorchvision==0.16.2+cu118\nnumpy==1.26.4\nopencv-python-headless==4.10.0.84\n' >"$pin"
-  "$py" -m pip install --quiet "pip<25"
+  # setuptools 80+ dropped pkg_resources, which torch 2.1's cpp_extension (imported by gsplat) still needs.
+  printf 'torch==2.1.2+cu118\ntorchvision==0.16.2+cu118\nnumpy==1.26.4\nopencv-python-headless==4.10.0.84\nsetuptools<70\n' >"$pin"
+  "$py" -m pip install --quiet "pip<25" "setuptools<70"
   log "Installing PyTorch (CUDA 11.8), nerfstudio, gsplat and the worker's packages"
   "$py" -m pip install --quiet torch==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
   "$py" -m pip install --quiet -c "$pin" --extra-index-url https://docs.gsplat.studio/whl/pt21cu118 \
